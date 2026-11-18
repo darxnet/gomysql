@@ -1,0 +1,6 @@
+version: "2"
+
+# Benchmarks and differential tests only: the same cases repeated per driver,
+# and a replace directive to test the checkout.
+linters:
+  default: standard
