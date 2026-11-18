@@ -69,17 +69,41 @@ jobs:
           - mysql:8.0
           - mysql:8.4
           - percona/percona-server:8.4
-        experimental: [false]
-        include:
-          # Non-blocking: MySQL 9 needs caching_sha2_password (ROADMAP phase 7);
-          # MariaDB is supported on a best-effort basis.
-          - image: mysql:9
-            experimental: true
-          - image: mariadb:10.6
-            experimental: true
-          - image: mariadb:11.4
-            experimental: true
-    continue-on-error: ${{ matrix.experimental }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Start server
+        run: scripts/testdb.sh "${{ matrix.image }}" 3306
+
+      - name: Test
+        env:
+          GOMYSQL_ADDR: 127.0.0.1:3306
+        run: go test -race -count=1 ./...
+
+      - name: Differential tests against go-sql-driver
+        working-directory: bench
+        env:
+          GOMYSQL_ADDR: 127.0.0.1:3306
+        run: go test -count=1 -run Diff ./...
+
+  # Not required by "CI passed": MySQL 9 needs caching_sha2_password
+  # (ROADMAP phase 7); MariaDB is supported on a best-effort basis.
+  integration-experimental:
+    name: Integration, non-blocking (${{ matrix.image }})
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - mysql:9
+          - mariadb:10.6
+          - mariadb:11.4
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
