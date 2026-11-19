@@ -112,8 +112,15 @@ func (conn *Conn) readColumns(columns []ColumnDefinition) error {
 // skipColumns reads n column definitions without keeping them.
 func (conn *Conn) skipColumns(n int) error {
 	for range n {
-		if _, err := conn.readPacket(); err != nil {
+		buf, err := conn.readPacket()
+		if err != nil {
 			return err
+		}
+
+		// MySQL 8.0 before 8.0.38 could send fewer definitions than the
+		// column count (go-sql-driver #1786).
+		if isEOF(buf) || buf[0] == iERR {
+			return malformed("fewer column definitions than columns")
 		}
 	}
 

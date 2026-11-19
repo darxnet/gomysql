@@ -95,6 +95,13 @@ func newResultServer(t *testing.T, deprecateEOF bool) *fakeServer {
 			case "ok then rows": // CALL p(): an OK with more results, then rows
 				out = c.okWith(nil, 2, 0, serverStatusMoreResultsExists)
 				out = c.eofWith(c.resultSet(out, colString, []byte{1, 'x'}), 0)
+			case "rows then error":
+				out = c.eofWith(c.resultSet(nil, colString, []byte{1, 'x'}), serverStatusMoreResultsExists)
+				out = c.frame(out, append([]byte{iERR, 0x25, 0x05, '#'}, "70100interrupted"...))
+			case "fewer columns":
+				out = c.frame(nil, []byte{2})
+				out = c.frame(out, colString[0].definition())
+				out = c.eofWith(out, 0)
 			case "rows then ok":
 				out = c.eofWith(c.resultSet(nil, colString, []byte{1, 'x'}), serverStatusMoreResultsExists)
 				out = c.okWith(out, 0, 0, 0)
@@ -288,5 +295,36 @@ func TestMoreResults(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestErrorInLaterResult(t *testing.T) {
+	t.Parallel()
+
+	for name, deprecateEOF := range eofModes {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			conn := openResultConn(t, deprecateEOF)
+
+			if _, err := conn.Exec("rows then error"); !errors.Is(err, &Error{Number: 1317}) {
+				t.Errorf("Exec: %v, want error 1317 of the second result", err)
+			}
+		})
+	}
+}
+
+func TestFewerColumnDefinitions(t *testing.T) {
+	t.Parallel()
+
+	conn, err := Open(newResultServer(t, false).config())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = conn.Close() }()
+
+	if _, err := conn.Exec("fewer columns"); !errors.Is(err, ErrBadConn) {
+		t.Errorf("Exec: %v, want ErrBadConn", err)
 	}
 }
