@@ -1006,3 +1006,33 @@ func TestConformanceServerError(t *testing.T) {
 		t.Errorf("Ping after error: %v", err)
 	}
 }
+
+// After wait_timeout the server closes the connection: MySQL 8.0.24+ sends
+// error 4031 first, older servers just close.
+func TestConformanceWaitTimeout(t *testing.T) {
+	t.Parallel()
+
+	c := confConn(t, "b", "b")
+
+	if _, err := c.Exec("SET SESSION wait_timeout = 1"); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(2500 * time.Millisecond)
+
+	err := c.Ping()
+	if err == nil {
+		t.Fatal("Ping after wait_timeout succeeded")
+	}
+
+	var e *gomysql.Error
+	if errors.As(err, &e) && e.Number != 4031 {
+		t.Errorf("got server error %v, want 4031 or a network error", err)
+	}
+
+	if errors.Is(err, gomysql.ErrOutOfSync) {
+		t.Errorf("got %v, want the server's error or a network error", err)
+	}
+
+	t.Logf("Ping after wait_timeout: %v", err)
+}

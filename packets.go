@@ -82,6 +82,26 @@ func (conn *Conn) readNext(buf []byte) ([]byte, error) {
 	return conn.readNext(buf)
 }
 
+// sequenceMismatch reads the payload of a packet with an unexpected
+// sequence id: an ERR packet sent by the server on its own, such as 4031
+// ER_CLIENT_INTERACTION_TIMEOUT after wait_timeout (MySQL 8.0.24+, seq 0),
+// is returned as *Error rather than as ErrOutOfSync. Either way the
+// connection is unusable.
+func (conn *Conn) sequenceMismatch(received byte, payloadLen int) error {
+	errSeq := errPacketSequenceMismatch(conn.sequence, received)
+
+	if payloadLen == 0 || payloadLen >= maxPayloadSize {
+		return errSeq
+	}
+
+	buf, err := conn.readNext(conn.buffer.GetN(payloadLen))
+	if err != nil || buf[0] != iERR {
+		return errSeq
+	}
+
+	return conn.processERRPacket(buf)
+}
+
 // https://dev.mysql.com/doc/internals/en/mysql-packet.html
 func (conn *Conn) readPacket() ([]byte, error) {
 	var prevB []byte
@@ -96,7 +116,7 @@ func (conn *Conn) readPacket() ([]byte, error) {
 
 		payloadLen := int(buf[0]) | int(buf[1])<<8 | int(buf[2])<<16
 		if buf[3] != conn.sequence {
-			return nil, errPacketSequenceMismatch(conn.sequence, buf[3])
+			return nil, conn.sequenceMismatch(buf[3], payloadLen)
 		}
 		conn.sequence++
 

@@ -65,3 +65,25 @@ func TestOutOfSync(t *testing.T) {
 		t.Errorf("Ping: %v, want %v", err, ErrOutOfSync)
 	}
 }
+
+// MySQL 8.0.24+ closes an idle connection after wait_timeout with an ERR
+// packet (4031) of sequence id 0; the next command must report it.
+func TestUnsolicitedError(t *testing.T) {
+	t.Parallel()
+
+	srv := newFakeServer(t, true, func(c *fakeConn, _ byte, _ []byte) error {
+		c.seq = 0
+
+		return c.errPacket(4031, "HY000", "The client was disconnected by the server because of inactivity.")
+	})
+
+	conn, err := Open(srv.config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if err := conn.Ping(); !errors.Is(err, &Error{Number: 4031}) {
+		t.Errorf("Ping: %v, want error 4031", err)
+	}
+}
