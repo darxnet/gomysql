@@ -39,6 +39,13 @@ func lenDecInt(b []byte) (n uint64, size int) {
 	return uint64(b[0]), 1
 }
 
+// isEOF reports whether buf ends rows or column definitions: an EOF packet,
+// or an OK packet with the EOF header under CLIENT_DEPRECATE_EOF. A text
+// row that starts with 0xfe (a string of 16 MB or more) is longer.
+func isEOF(buf []byte) bool {
+	return buf[0] == iEOF && len(buf) < maxPayloadSize
+}
+
 // https://dev.mysql.com/doc/internals/en/com-query-response.html#packet-ProtocolText::ResultsetRow
 func isNUll(b byte) bool {
 	return b == 0xfb

@@ -288,13 +288,13 @@ func (conn *Conn) readUntilEOF() (err error) {
 			return err
 		}
 
-		switch buf[0] {
-		case iEOF: // EOF, or OK with the EOF header under CLIENT_DEPRECATE_EOF
+		switch {
+		case isEOF(buf): // EOF, or OK with the EOF header under CLIENT_DEPRECATE_EOF
 			conn.processEOFPacket(buf)
 			return nil
-		case iERR:
+		case buf[0] == iERR:
 			return conn.processERRPacket(buf)
-		case iOK:
+		case buf[0] == iOK:
 			// do nothing, just read unprocessed packets
 		default:
 			return errUnexpectedPacketIdentity(buf[0])

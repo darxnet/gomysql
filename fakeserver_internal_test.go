@@ -177,24 +177,31 @@ func rawServer(tb testing.TB, script func(c *fakeConn) error) Config {
 	return Config{Protocol: "tcp", Address: ln.Addr().String(), User: "u", Password: "p", DbName: "db"}
 }
 
-// read returns the next payload; it is valid until the next read.
+// read returns the next payload, joining packets split at 16 MB; it is
+// valid until the next read.
 func (c *fakeConn) read() ([]byte, error) {
-	var h [4]byte
-	if _, err := io.ReadFull(c.r, h[:]); err != nil {
-		return nil, err
+	c.buf = c.buf[:0]
+
+	for {
+		var h [4]byte
+		if _, err := io.ReadFull(c.r, h[:]); err != nil {
+			return nil, err
+		}
+
+		n := int(h[0]) | int(h[1])<<8 | int(h[2])<<16
+		c.seq = h[3] + 1
+
+		start := len(c.buf)
+		c.buf = append(c.buf, make([]byte, n)...)
+
+		if _, err := io.ReadFull(c.r, c.buf[start:]); err != nil {
+			return nil, err
+		}
+
+		if n < maxPayloadSize {
+			return c.buf, nil
+		}
 	}
-
-	n := int(h[0]) | int(h[1])<<8 | int(h[2])<<16
-	c.seq = h[3] + 1
-
-	if cap(c.buf) < n {
-		c.buf = make([]byte, n)
-	}
-
-	c.buf = c.buf[:n]
-	_, err := io.ReadFull(c.r, c.buf)
-
-	return c.buf, err
 }
 
 func (c *fakeConn) write(payload []byte) error {

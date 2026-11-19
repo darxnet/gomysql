@@ -38,7 +38,6 @@ var knownBugs = map[string]string{
 	"TestConformanceFloat/float":                        "phase 6: float dest",
 	"TestConformanceBytesReuse/reuse":                   "phase 6: []byte dest reuse",
 	"TestConformanceNULL/null":                          "phase 6: NULL",
-	"TestConformanceLongData/long":                      "phase 4: responses over 16 MB",
 	"TestConformanceRawBytesBig/rawbytes":               "phase 6: RawBytes in text protocol",
 	"TestConformanceDateTime/datetime":                  "phase 6: time dest",
 	"TestConformanceStmtArgs/args":                      "phase 5: EXECUTE column definitions",
