@@ -2,7 +2,6 @@ package gomysql
 
 import (
 	"encoding/binary"
-	"errors"
 )
 
 // appendLenEncInt appends Protocol::LengthEncodedInteger.
@@ -94,8 +93,6 @@ func (column *ColumnDefinition) parse(buf []byte) {
 	pos += 2
 	column.Decimals = buf[pos]
 }
-
-var errExpectedEOF = errors.New("protocol error: expected EOF_Packet")
 
 // readColumns reads a column definition into each element of columns,
 // followed by an EOF packet unless CLIENT_DEPRECATE_EOF is on. An empty

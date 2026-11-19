@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
-	"strconv"
 	"syscall"
 )
 
@@ -74,13 +73,33 @@ func (conn *Conn) readNext(buf []byte) ([]byte, error) {
 			return nil, err
 		}
 		if n != payloadLenUncompressed {
-			return nil, errors.New("read compress error: server sent fewer data than expected")
+			return nil, malformed("compressed packet shorter than its header says")
 		}
 	}
 
 	conn.bufferCompressedDataLen += len(bufRead)
 
 	return conn.readNext(buf)
+}
+
+// sequenceMismatch reads the payload of a packet with an unexpected
+// sequence id: an ERR packet sent by the server on its own, such as 4031
+// ER_CLIENT_INTERACTION_TIMEOUT after wait_timeout (MySQL 8.0.24+, seq 0),
+// is returned as *Error rather than as ErrOutOfSync. Either way the
+// connection is unusable.
+func (conn *Conn) sequenceMismatch(received byte, payloadLen int) error {
+	errSeq := errPacketSequenceMismatch(conn.sequence, received)
+
+	if payloadLen == 0 || payloadLen >= maxPayloadSize {
+		return errSeq
+	}
+
+	buf, err := conn.readNext(conn.buffer.GetN(payloadLen))
+	if err != nil || buf[0] != iERR {
+		return errSeq
+	}
+
+	return conn.processERRPacket(buf)
 }
 
 // https://dev.mysql.com/doc/internals/en/mysql-packet.html
@@ -97,7 +116,7 @@ func (conn *Conn) readPacket() ([]byte, error) {
 
 		payloadLen := int(buf[0]) | int(buf[1])<<8 | int(buf[2])<<16
 		if buf[3] != conn.sequence {
-			return nil, errPacketSequenceMismatch(conn.sequence, buf[3])
+			return nil, conn.sequenceMismatch(buf[3], payloadLen)
 		}
 		conn.sequence++
 
@@ -334,7 +353,7 @@ func (conn *Conn) readMoreResults() error {
 					return err
 				}
 				if buf[0] != iEOF {
-					return errors.New("protocol error: expected EOF_Packet")
+					return errExpectedEOF
 				}
 				conn.processEOFPacket(buf)
 			}
@@ -372,27 +391,23 @@ func (conn *Conn) processOKPacket(buf []byte) {
 // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_basic_err_packet.html
 // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_basic_expired_passwords.html not implemented
 func (conn *Conn) processERRPacket(buf []byte) error {
-	var pos int
+	if len(buf) < 3 {
+		return malformed("ERR packet")
+	}
 
-	pos += 1 // header 0xff
-
-	errCode := uint16(buf[pos]) | uint16(buf[pos+1])<<8
-	pos += 2
+	e := &Error{Number: binary.LittleEndian.Uint16(buf[1:])}
+	buf = buf[3:]
 
 	// sql_state_marker '#' and the 5-byte SQL state; absent in errors sent
 	// before the handshake, such as 1129 "Host blocked".
-	var errState string
-	if len(buf) >= pos+6 && buf[pos] == '#' {
-		errState = string(buf[pos : pos+6])
-		pos += 6
+	if len(buf) >= 6 && buf[0] == '#' {
+		copy(e.SQLState[:], buf[1:6])
+		buf = buf[6:]
 	}
 
-	errMsg := string(buf[pos:])
+	e.Message = string(buf)
 
-	// ERROR <code> (<state>): <msg>
-	s := "ERROR " + strconv.FormatUint(uint64(errCode), 10) + " (" + errState + "): " + errMsg
-
-	return errors.New(s)
+	return e
 }
 
 func (conn *Conn) processEOFPacket(buf []byte) {
