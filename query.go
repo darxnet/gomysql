@@ -22,43 +22,22 @@ func (conn *Conn) Query(query string, args ...any) (rows *RowsText, err error) {
 
 	err = writeCommand(conn, comQuery, query)
 	if err != nil {
-		return rows, err
+		return nil, err
 	}
 
-	buf, err := conn.readPacket()
+	n, err := conn.readResultHeader()
 	if err != nil {
-		return rows, err
+		return nil, err
 	}
 
-	switch buf[0] {
-	case iERR:
-		err = conn.processERRPacket(buf)
-		return rows, err
+	// A statement without a result set, such as DO 1, has no rows.
+	rows = &RowsText{resultRows{conn: conn, done: n == 0, columns: make([]ColumnDefinition, n)}}
 
-	case iOK:
-		err = conn.processOKPacket(buf)
-		if err != nil {
-			return nil, err
-		}
-
-		return &RowsText{conn: conn, isStopped: true}, nil
-
-	case iLocalInfile:
-		err = errLocalInfile
-		return rows, err
-
-	// ProtocolText::ResultSet
-	default:
-		// column count, then the column definitions; the rows follow
-		n, err := columnCount(buf)
-		if err != nil {
-			return nil, err
-		}
-
-		rows = &RowsText{conn: conn, columns: make([]ColumnDefinition, n)}
-
-		return rows, conn.readColumns(rows.columns)
+	if err := conn.readColumns(rows.columns); err != nil {
+		return nil, err
 	}
+
+	return rows, nil
 }
 
 func (conn *Conn) QueryRow(query string, args ...any) (row *RowText) {
@@ -80,75 +59,57 @@ func (conn *Conn) QueryRow(query string, args ...any) (row *RowText) {
 	return row
 }
 
+// Result is the outcome of Exec.
 type Result struct {
-	errLast      error
 	lastInsertId uint64
 	rowsAffected uint64
 }
 
+// LastInsertId returns the AUTO_INCREMENT value of the last inserted row.
 func (r *Result) LastInsertId() (int64, error) {
-	return int64(r.lastInsertId), r.errLast //nolint:gosec // G115: database/sql's Result uses int64
+	return int64(r.lastInsertId), nil //nolint:gosec // G115: database/sql's Result uses int64
 }
 
+// RowsAffected returns the number of rows changed, or matched with
+// Config.IsClientFoundRows.
 func (r *Result) RowsAffected() (int64, error) {
-	return int64(r.rowsAffected), r.errLast //nolint:gosec // G115: database/sql's Result uses int64
+	return int64(r.rowsAffected), nil //nolint:gosec // G115: database/sql's Result uses int64
 }
 
-func (conn *Conn) Exec(query string, args ...any) (result *Result, err error) {
+// Exec runs query, with args interpolated, and returns its result. Rows it
+// returns are skipped.
+func (conn *Conn) Exec(query string, args ...any) (*Result, error) {
 	if len(args) > 0 {
+		var err error
+
 		query, err = encodeQuery(query, args...)
 		if err != nil {
-			return result, err
+			return nil, err
 		}
 	}
 
-	err = writeCommand(conn, comQuery, query)
+	if err := writeCommand(conn, comQuery, query); err != nil {
+		return nil, err
+	}
+
+	return conn.readResult()
+}
+
+// readResult reads the response to a command run for its result: the
+// counts of its first OK packet. Rows and further results are skipped.
+func (conn *Conn) readResult() (*Result, error) {
+	n, err := conn.readResultHeader()
 	if err != nil {
-		return result, err
+		return nil, err
 	}
 
-	buf, err := conn.readPacket()
-	if err != nil {
-		return result, err
+	result := &Result{lastInsertId: conn.lastInsertId, rowsAffected: conn.rowsAffected}
+
+	if err := conn.skipResult(n); err != nil {
+		return nil, err
 	}
 
-	result = new(Result)
-
-	switch buf[0] {
-	case iERR:
-		err = conn.processERRPacket(buf)
-		result.errLast = err
-		return result, err
-
-	case iOK:
-		err = conn.processOKPacket(buf)
-		if err != nil {
-			return nil, err
-		}
-
-		result.rowsAffected = conn.rowsAffected
-		result.lastInsertId = conn.lastInsertId
-		return result, err
-
-	case iLocalInfile:
-		err = errLocalInfile
-		return result, err
-
-	// ProtocolText::ResultSet
-	default:
-		err = conn.skipColumns(buf)
-		if err != nil {
-			return nil, err
-		}
-
-		// the rows
-		err = conn.readUntilEOF()
-		if err != nil {
-			return nil, err
-		}
-
-		return result, nil
-	}
+	return result, nil
 }
 
 func encodeQuery(query string, args ...any) (s string, err error) {

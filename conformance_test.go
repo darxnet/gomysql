@@ -42,8 +42,7 @@ var knownBugs = map[string]string{
 	"TestConformanceNULL/null":                          "phase 6: NULL",
 	"TestConformanceRawBytesBig/rawbytes":               "phase 6: RawBytes in text protocol",
 	"TestConformanceDateTime/datetime":                  "phase 6: time dest",
-	"TestConformanceStmtArgs/args":                      "phase 5: EXECUTE column definitions",
-	"TestConformanceStmtExec/stmtexec":                  "phase 5: Stmt.Exec",
+	"TestConformanceStmtArgs/args":                      "phase 6: float dest",
 	"TestConformanceInterpolation/escaped":              "phase 9: interpolation",
 	"TestConformanceInterpolation/question-mark-in-arg": "phase 9: interpolation",
 	"TestConformanceInterpolation/float-precision":      "phase 9: interpolation",
@@ -51,7 +50,6 @@ var knownBugs = map[string]string{
 	"TestConformanceSQLInjection/1_OR_1=1":              "phase 9: interpolation",
 	"TestConformanceSQLInjection/'_OR_'1'='1":           "phase 9: interpolation",
 	"TestConformanceTx/tx":                              "phase 9: Tx.Exec args",
-	"TestConformanceQueryNoRows/do":                     "phase 5: Query without result set",
 	"TestConformanceAuth/c2":                            "phase 7: caching_sha2_password",
 }
 

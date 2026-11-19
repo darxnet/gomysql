@@ -79,13 +79,40 @@ func (conn *Conn) Prepare(query string) (*Stmt, error) {
 const comStmtExecute byte = 0x17
 
 // Query executes the prepared statement with args (COM_STMT_EXECUTE) and
-// returns its rows.
+// returns its rows. A statement without a result set has no rows.
 //
 // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_stmt_execute.html
-func (stmt *Stmt) Query(args ...any) (rows *RowsBinary, err error) {
+func (stmt *Stmt) Query(args ...any) (*RowsBinary, error) {
+	if err := stmt.execute(args); err != nil {
+		return nil, err
+	}
+
+	n, err := stmt.conn.readResultHeader()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := stmt.readColumns(n); err != nil {
+		return nil, err
+	}
+
+	return &RowsBinary{resultRows{conn: stmt.conn, done: n == 0, columns: stmt.columns}}, nil
+}
+
+// Exec executes the prepared statement with args and returns its result.
+// Rows it returns are skipped.
+func (stmt *Stmt) Exec(args ...any) (*Result, error) {
+	if err := stmt.execute(args); err != nil {
+		return nil, err
+	}
+
+	return stmt.conn.readResult()
+}
+
+// execute sends COM_STMT_EXECUTE.
+func (stmt *Stmt) execute(args []any) error {
 	if len(stmt.params) != len(args) {
-		err = errors.New("wrong args count")
-		return rows, err
+		return errors.New("wrong args count")
 	}
 
 	// COM_STMT_EXECUTE after the command byte: stmt-id, flags (no cursor),
@@ -110,9 +137,11 @@ func (stmt *Stmt) Query(args ...any) (rows *RowsBinary, err error) {
 				buf[posNull+i/8] |= 1 << (i % 8)
 			}
 
+			var err error
+
 			types, values, err = appendParam(types, values, arg)
 			if err != nil {
-				return rows, err
+				return err
 			}
 		}
 
@@ -120,32 +149,36 @@ func (stmt *Stmt) Query(args ...any) (rows *RowsBinary, err error) {
 		buf = append(buf, values...)
 	}
 
-	err = writeCommand(stmt.conn, comStmtExecute, buf)
-	if err != nil {
-		return rows, err
+	return writeCommand(stmt.conn, comStmtExecute, buf)
+}
+
+// readColumns reads the column definitions of an EXECUTE result into
+// stmt.columns. They can differ from those of PREPARE: the type of SELECT ?
+// is known only with the argument. A definition with the same names only
+// updates the fixed-length fields, without allocating.
+func (stmt *Stmt) readColumns(n int) error {
+	if n == 0 {
+		return nil
 	}
 
-	buf, err = stmt.conn.readPacket()
-	if err != nil {
-		return rows, err
+	if n != len(stmt.columns) {
+		stmt.columns = make([]ColumnDefinition, n)
+
+		return stmt.conn.readColumns(stmt.columns)
 	}
 
-	switch buf[0] {
-	case iERR:
-		err = stmt.conn.processERRPacket(buf)
-		return rows, err
-
-	case iOK:
-		return nil, stmt.conn.processOKPacket(buf)
-
-	default:
-		// The column definitions are those of Prepare (ROADMAP phase 5).
-		if err := stmt.conn.skipColumns(buf); err != nil {
-			return nil, err
+	for i := range stmt.columns {
+		buf, err := stmt.conn.readPacket()
+		if err != nil {
+			return err
 		}
 
-		return &RowsBinary{stmt: stmt}, nil
+		if err := stmt.columns[i].update(buf); err != nil {
+			return err
+		}
 	}
+
+	return stmt.conn.readColumnsEOF()
 }
 
 const unsignedParam byte = 0x80
