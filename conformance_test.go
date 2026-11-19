@@ -11,6 +11,8 @@ package gomysql_test
 // GOMYSQL_KNOWN_BUGS=1 to run them anyway.
 
 import (
+	"crypto/rand"
+	"crypto/tls"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -38,7 +40,6 @@ var knownBugs = map[string]string{
 	"TestConformanceFloat/float":                        "phase 6: float dest",
 	"TestConformanceBytesReuse/reuse":                   "phase 6: []byte dest reuse",
 	"TestConformanceNULL/null":                          "phase 6: NULL",
-	"TestConformanceLongData/long":                      "phase 4: responses over 16 MB",
 	"TestConformanceRawBytesBig/rawbytes":               "phase 6: RawBytes in text protocol",
 	"TestConformanceDateTime/datetime":                  "phase 6: time dest",
 	"TestConformanceStmtArgs/args":                      "phase 5: EXECUTE column definitions",
@@ -52,7 +53,6 @@ var knownBugs = map[string]string{
 	"TestConformanceTx/tx":                              "phase 9: Tx.Exec args",
 	"TestConformanceErrorRecovery/rows-close-early":     "phase 5: early Rows.Close",
 	"TestConformanceQueryNoRows/do":                     "phase 5: Query without result set",
-	"TestConformanceCompress/100000":                    "phase 4: compressed packets read with one Read",
 	"TestConformanceAuth/c2":                            "phase 7: caching_sha2_password",
 }
 
@@ -948,7 +948,7 @@ func hasCachingSHA2(t *testing.T) bool {
 func TestConformanceCompress(t *testing.T) {
 	t.Parallel()
 
-	for _, n := range []int{1, 1000, 100_000} {
+	for _, n := range []int{1, 1000, 100_000, 3 << 20, 20 << 20} {
 		t.Run(strconv.Itoa(n), func(t *testing.T) {
 			t.Parallel()
 			knownBug(t)
@@ -966,21 +966,46 @@ func TestConformanceCompress(t *testing.T) {
 			}
 			defer func() { _ = c.Close() }()
 
-			for range 3 {
-				var s string
-				if err := c.QueryRow("SELECT REPEAT('x', ?)", n).Scan(&s); err != nil {
-					t.Fatal(err)
-				}
+			var maxPacket int
+			if err := c.QueryRow("SELECT @@max_allowed_packet").Scan(&maxPacket); err != nil {
+				t.Fatal(err)
+			}
 
-				if len(s) != n {
-					t.Fatalf("got %d bytes, want %d", len(s), n)
-				}
+			if n > maxPacket-1024 {
+				t.Skipf("max_allowed_packet is %d", maxPacket)
+			}
 
-				if err := c.Ping(); err != nil {
-					t.Fatalf("ping: %v", err)
-				}
+			for range 2 {
+				compressRoundTrip(t, c, n)
 			}
 		})
+	}
+}
+
+// compressRoundTrip sends and receives n bytes, then pings.
+func compressRoundTrip(t *testing.T, c *gomysql.Conn, n int) {
+	t.Helper()
+
+	var s string
+	if err := c.QueryRow("SELECT REPEAT('x', ?)", n).Scan(&s); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(s) != n {
+		t.Fatalf("got %d bytes, want %d", len(s), n)
+	}
+
+	var length int
+	if err := c.QueryRow("SELECT LENGTH('" + strings.Repeat("y", n) + "')").Scan(&length); err != nil {
+		t.Fatal(err)
+	}
+
+	if length != n {
+		t.Fatalf("server got %d bytes, want %d", length, n)
+	}
+
+	if err := c.Ping(); err != nil {
+		t.Fatalf("ping: %v", err)
 	}
 }
 
@@ -1035,4 +1060,155 @@ func TestConformanceWaitTimeout(t *testing.T) {
 	}
 
 	t.Logf("Ping after wait_timeout: %v", err)
+}
+
+// TLS with the server's self-signed certificate.
+func TestConformanceTLS(t *testing.T) {
+	t.Parallel()
+
+	addr := os.Getenv("GOMYSQL_ADDR")
+	if addr == "" {
+		t.Skip("GOMYSQL_ADDR not set")
+	}
+
+	// have_ssl is gone in MySQL 8.0.26+, where TLS is always built in.
+	name, haveSSL, version := "", "YES", ""
+	if err := confConn(t, "b", "b").QueryRow("SHOW VARIABLES LIKE 'have_ssl'").Scan(&name, &haveSSL); err != nil &&
+		!errors.Is(err, sql.ErrNoRows) {
+		t.Fatal(err)
+	}
+
+	if haveSSL != "YES" {
+		t.Skipf("the server has no TLS (have_ssl=%s)", haveSSL)
+	}
+
+	if err := confConn(t, "b", "b").QueryRow("SELECT VERSION()").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+
+	if os.Getenv("GOMYSQL_KNOWN_BUGS") == "" && (hasCachingSHA2(t) || strings.Contains(version, "MariaDB")) {
+		t.Skip("known bug, phase 7: authentication over TLS fails on MySQL 8+ and MariaDB 11")
+	}
+
+	// MySQL 5.7 with OpenSSL 1.0.2 has no ECDHE, only the RSA key exchange,
+	// which Go leaves out of its default cipher suites since Go 1.22.
+	suites := make([]uint16, 0, len(tls.CipherSuites())+2)
+	suites = append(suites, tls.TLS_RSA_WITH_AES_128_GCM_SHA256, tls.TLS_RSA_WITH_AES_256_GCM_SHA384)
+
+	for _, cs := range tls.CipherSuites() {
+		suites = append(suites, cs.ID)
+	}
+
+	c, err := gomysql.Open(gomysql.Config{
+		Protocol: "tcp", Address: addr, User: "b", Password: "b", DbName: "gomysql",
+		IsSSL: true,
+		TlsConfig: &tls.Config{
+			InsecureSkipVerify: true, //nolint:gosec // self-signed test server
+			CipherSuites:       suites,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+
+	var cipher string
+	if err := c.QueryRow("SHOW SESSION STATUS LIKE 'Ssl_cipher'").Scan(new(string), &cipher); err != nil {
+		t.Fatal(err)
+	}
+
+	if cipher == "" {
+		t.Error("the session is not encrypted")
+	}
+
+	compressRoundTrip(t, c, 100_000)
+}
+
+// Compressed requests whose packet count differs from their frame count
+// (a payload just under 16 MB is one packet but two frames), and
+// incompressible payloads of 16 MB and more, whose compressed frame would
+// be larger than the plain one.
+func TestConformanceCompressEdges(t *testing.T) {
+	t.Parallel()
+
+	const wrapper = len("SELECT LENGTH('')") + 1 // and the command byte
+
+	sizes := map[string]int{
+		"one-packet-two-frames": 0xffffff - 2 - wrapper,
+		"exactly-one-packet":    0xffffff - wrapper,
+		"incompressible-16MB":   -(16 << 20),
+		"incompressible-20MB":   -(20 << 20),
+	}
+
+	for name, n := range sizes {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			c := confCompressConn(t, max(n, -n)+1024)
+
+			if n > 0 {
+				compressRoundTrip(t, c, n)
+
+				return
+			}
+
+			blob := make([]byte, -n)
+			_, _ = rand.Read(blob)
+
+			stmt, err := c.Prepare("SELECT LENGTH(?)")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			rows, err := stmt.Query(blob)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = rows.Close() }()
+
+			var length int64
+			if !rows.Next() {
+				t.Fatalf("no row: %v", rows.Err())
+			}
+
+			if err := rows.Scan(&length); err != nil {
+				t.Fatal(err)
+			}
+
+			if length != int64(-n) {
+				t.Errorf("server got %d bytes, want %d", length, -n)
+			}
+		})
+	}
+}
+
+// confCompressConn opens a compressed connection, skipping the test when
+// the server does not accept packets of need bytes.
+func confCompressConn(t *testing.T, need int) *gomysql.Conn {
+	t.Helper()
+
+	addr := os.Getenv("GOMYSQL_ADDR")
+	if addr == "" {
+		t.Skip("GOMYSQL_ADDR not set")
+	}
+
+	c, err := gomysql.Open(gomysql.Config{
+		Protocol: "tcp", Address: addr, User: "b", Password: "b", DbName: "gomysql", IsCompress: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = c.Close() })
+
+	var maxPacket int
+	if err := c.QueryRow("SELECT @@max_allowed_packet").Scan(&maxPacket); err != nil {
+		t.Fatal(err)
+	}
+
+	if need > maxPacket {
+		t.Skipf("max_allowed_packet is %d", maxPacket)
+	}
+
+	return c
 }

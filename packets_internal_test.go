@@ -1,7 +1,6 @@
 package gomysql
 
 import (
-	"bufio"
 	"bytes"
 	"testing"
 )
@@ -14,7 +13,7 @@ func TestReadMoreResults(t *testing.T) {
 
 	conn := &Conn{
 		capFlags: clientProtocol41,
-		reader:   bufio.NewReader(bytes.NewReader(stream)),
+		reader:   newPacketReader(bytes.NewReader(stream), 64),
 	}
 	if err := conn.readUntilEOF(); err != nil {
 		t.Fatal(err)

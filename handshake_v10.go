@@ -1,7 +1,6 @@
 package gomysql
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/tls"
 	"encoding/binary"
@@ -126,8 +125,10 @@ func (conn *Conn) handshakeResponse41(authPluginName, authPluginData []byte) (er
 			return err
 		}
 		conn.conn = tlsConn
-		conn.reader = bufio.NewReaderSize(conn.conn, readerBufferSize)
-		conn.writer = bufio.NewWriterSize(conn.conn, writerBufferSize)
+		err = conn.reader.switchTo(tlsConn)
+		if err != nil {
+			return err
+		}
 	}
 
 	// username

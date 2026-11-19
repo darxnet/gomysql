@@ -2,7 +2,6 @@ package gomysql
 
 import (
 	"bytes"
-	"compress/zlib"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1" //nolint:gosec // G505: mysql_native_password is defined with SHA-1
@@ -134,8 +133,7 @@ func (conn *Conn) handshakeAuth(authPluginName, authPluginData []byte) (err erro
 	case iOK:
 		conn.processOKPacket(buf)
 		if conn.config.IsCompress {
-			conn.isCompress = true
-			conn.writerCompressed, err = zlib.NewWriterLevel(nil, zlib.DefaultCompression) // 0x78 0x9c from server
+			err = conn.startCompression()
 		}
 		return err
 

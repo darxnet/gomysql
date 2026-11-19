@@ -1,46 +1,43 @@
 package gomysql
 
 import (
-	"bufio"
-	"compress/zlib"
 	"crypto/tls"
-	"io"
 	"net"
 )
 
 type Conn struct {
-	readerCompressed        io.ReadCloser
-	conn                    net.Conn
-	errLast                 error
-	writerCompressed        *zlib.Writer
-	reader                  *bufio.Reader
-	writer                  *bufio.Writer
-	config                  Config
-	server                  string
-	buffer                  buffer
-	bufferCompressed        buffer
-	lastInsertId            uint64
-	rowsAffected            uint64
-	bufferCompressedDataLen int
-	id                      uint32
-	capFlags                uint32
-	statusFlags             uint16
-	charSet                 byte
-	sequenceCompressed      byte
-	isCompress              bool
-	sequence                byte
+	conn         net.Conn
+	errLast      error
+	compress     *compression // nil unless the compressed protocol is on
+	config       Config
+	server       string
+	reader       packetReader
+	wbuf         []byte // reused write buffer
+	lastInsertId uint64
+	rowsAffected uint64
+	id           uint32
+	capFlags     uint32
+	statusFlags  uint16
+	charSet      byte
+	sequence     byte
 }
 
 func (conn *Conn) dial() error {
-	var err error
-
-	conn.conn, err = net.Dial(conn.config.Protocol, conn.config.Address)
-	if err == nil {
-		conn.reader = bufio.NewReaderSize(conn.conn, readerBufferSize)
-		conn.writer = bufio.NewWriterSize(conn.conn, writerBufferSize)
+	nc, err := net.Dial(conn.config.Protocol, conn.config.Address)
+	if err != nil {
+		return err
 	}
 
-	return err
+	conn.conn = nc
+	conn.compress = nil
+
+	if conn.reader.buf == nil {
+		conn.reader = newPacketReader(nc, readerBufferSize)
+	} else {
+		conn.reader.reset(nc)
+	}
+
+	return nil
 }
 
 func (conn *Conn) getTlsConfig() *tls.Config {
@@ -57,7 +54,6 @@ func (conn *Conn) getTlsConfig() *tls.Config {
 // On failure the socket is closed.
 func (conn *Conn) Conn() error {
 	conn.sequence = 0
-	conn.sequenceCompressed = 0
 	conn.capFlags = 0
 
 	if err := conn.dial(); err != nil {

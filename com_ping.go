@@ -3,7 +3,7 @@ package gomysql
 const comPing byte = 0x0e
 
 func (conn *Conn) Ping() (err error) {
-	err = conn.writePacketCom(comPing)
+	err = writeCommand(conn, comPing, "")
 	if err != nil {
 		return err
 	}

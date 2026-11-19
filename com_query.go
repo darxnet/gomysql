@@ -20,7 +20,7 @@ func (conn *Conn) Query(query string, args ...any) (rows *RowsText, err error) {
 		}
 	}
 
-	err = conn.writePacketComStr(comQuery, query)
+	err = writeCommand(conn, comQuery, query)
 	if err != nil {
 		return rows, err
 	}
@@ -99,7 +99,7 @@ func (conn *Conn) Exec(query string, args ...any) (result *Result, err error) {
 		}
 	}
 
-	err = conn.writePacketComStr(comQuery, query)
+	err = writeCommand(conn, comQuery, query)
 	if err != nil {
 		return result, err
 	}
@@ -160,10 +160,10 @@ func (conn *Conn) Exec(query string, args ...any) (result *Result, err error) {
 				return result, err
 			}
 
-			switch buf[0] {
-			case iEOF: // EOF, or OK with the EOF header under CLIENT_DEPRECATE_EOF
+			switch {
+			case isEOF(buf): // EOF, or OK with the EOF header under CLIENT_DEPRECATE_EOF
 				return result, err
-			case iERR:
+			case buf[0] == iERR:
 				conn.errLast = conn.processERRPacket(buf)
 				return result, err
 			default:

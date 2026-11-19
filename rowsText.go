@@ -52,12 +52,12 @@ func (rows *RowsText) Next() bool {
 		return false
 	}
 
-	switch buf[0] {
-	case iEOF: // EOF, or OK with the EOF header under CLIENT_DEPRECATE_EOF
+	switch {
+	case isEOF(buf): // EOF, or OK with the EOF header under CLIENT_DEPRECATE_EOF
 		rows.conn.processEOFPacket(buf)
 		rows.isStopped = true
 		return false
-	case iERR:
+	case buf[0] == iERR:
 		rows.errLast = rows.conn.processERRPacket(buf)
 		rows.isStopped = true
 		return false

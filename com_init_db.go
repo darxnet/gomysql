@@ -3,7 +3,7 @@ package gomysql
 const comInitDB byte = 0x02
 
 func (conn *Conn) UseDB(schema string) (err error) {
-	err = conn.writePacketComStr(comInitDB, schema)
+	err = writeCommand(conn, comInitDB, schema)
 	if err != nil {
 		return err
 	}

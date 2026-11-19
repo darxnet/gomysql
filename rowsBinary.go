@@ -20,7 +20,7 @@ type Stmt struct {
 }
 
 func (stmt *Stmt) Close() error {
-	return stmt.conn.writePacketComBytes(comStmtClose, binary.LittleEndian.AppendUint32(nil, stmt.id))
+	return writeCommand(stmt.conn, comStmtClose, binary.LittleEndian.AppendUint32(nil, stmt.id))
 }
 
 type RowsBinary struct {
@@ -61,12 +61,12 @@ func (rows *RowsBinary) Next() bool {
 		return false
 	}
 
-	switch buf[0] {
-	case iEOF:
+	switch {
+	case isEOF(buf): // EOF, or OK with the EOF header under CLIENT_DEPRECATE_EOF
 		rows.stmt.conn.processEOFPacket(buf)
 		rows.isStopped = true
 		return false
-	case iERR:
+	case buf[0] == iERR:
 		rows.errLast = rows.stmt.conn.processERRPacket(buf)
 		return false
 	default:
