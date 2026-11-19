@@ -94,7 +94,7 @@ func (stmt *Stmt) Query(args ...any) (rows *RowsBinary, err error) {
 				return rows, err
 			}
 			if buf[0] != iEOF {
-				err = errExpectedEOF
+				err = errUnexpectedPacketIdentity(buf[0])
 				return rows, err
 			}
 		}

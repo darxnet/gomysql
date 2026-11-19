@@ -40,12 +40,12 @@ func TestProcessERRPacket(t *testing.T) {
 		t.Errorf("got %#v", err)
 	}
 
-	if err := conn.processERRPacket([]byte{iERR, 0x15}); !errors.Is(err, ErrMalformedPacket) {
+	if err := conn.processERRPacket([]byte{iERR, 0x15}); !errors.Is(err, ErrBadConn) {
 		t.Errorf("short ERR packet: %v", err)
 	}
 }
 
-// A reply with an unexpected sequence id is ErrOutOfSync.
+// A reply with an unexpected sequence id is ErrBadConn.
 func TestOutOfSync(t *testing.T) {
 	t.Parallel()
 
@@ -61,8 +61,8 @@ func TestOutOfSync(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	if err := conn.Ping(); !errors.Is(err, ErrOutOfSync) {
-		t.Errorf("Ping: %v, want %v", err, ErrOutOfSync)
+	if err := conn.Ping(); !errors.Is(err, ErrBadConn) {
+		t.Errorf("Ping: %v, want %v", err, ErrBadConn)
 	}
 }
 

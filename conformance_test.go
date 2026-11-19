@@ -1030,7 +1030,7 @@ func TestConformanceWaitTimeout(t *testing.T) {
 		t.Errorf("got server error %v, want 4031 or a network error", err)
 	}
 
-	if errors.Is(err, gomysql.ErrOutOfSync) {
+	if errors.Is(err, gomysql.ErrBadConn) {
 		t.Errorf("got %v, want the server's error or a network error", err)
 	}
 

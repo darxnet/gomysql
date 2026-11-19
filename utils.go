@@ -121,7 +121,7 @@ func (conn *Conn) readColumns(columns []ColumnDefinition) error {
 	}
 
 	if buf[0] != iEOF {
-		return errExpectedEOF
+		return errUnexpectedPacketIdentity(buf[0])
 	}
 
 	return nil
