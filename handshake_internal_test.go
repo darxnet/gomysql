@@ -144,3 +144,21 @@ func TestHandshakeV10Malformed(t *testing.T) {
 		}
 	}
 }
+
+func TestClientCapsFollowServer(t *testing.T) {
+	t.Parallel()
+
+	conn := &Conn{config: Config{Attr: map[string]string{"program_name": "x"}}}
+
+	conn.capFlags = fakeCapabilities
+	if caps, _ := conn.clientCaps(20); caps&(clientConnectAttrs|clientDeprecateEOF) != 0 {
+		t.Errorf("caps %#x ask for what the server does not offer", caps)
+	}
+
+	want := clientConnectAttrs | clientDeprecateEOF
+
+	conn.capFlags = fakeCapabilities | want
+	if caps, _ := conn.clientCaps(20); caps&want != want {
+		t.Errorf("caps %#x leave out what the server offers", caps)
+	}
+}

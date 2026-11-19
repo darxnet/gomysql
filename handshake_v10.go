@@ -142,8 +142,10 @@ func (conn *Conn) clientCaps(authResponseLen int) (uint32, error) {
 		caps |= clientConnectWithDB
 	}
 
+	// Servers without CLIENT_CONNECT_ATTRS, such as MySQL 5.5 and some
+	// proxies, would read the attributes as part of the next field.
 	if len(conn.config.Attr) > 0 {
-		caps |= clientConnectAttrs
+		caps |= server & clientConnectAttrs
 	}
 
 	if authResponseLen > 255 {
