@@ -47,7 +47,7 @@ func (conn *Conn) readNext(buf []byte) ([]byte, error) {
 	payloadLenUncompressed := int(bufRead[4]) | int(bufRead[5])<<8 | int(bufRead[6])<<16
 
 	if bufRead[3] != conn.sequenceCompressed {
-		return nil, errPacketSequenceCompressedMismatch(conn.sequenceCompressed, bufRead[3])
+		return nil, errPacketSequenceMismatch(conn.sequenceCompressed, bufRead[3])
 	}
 	conn.sequenceCompressed++
 
@@ -85,7 +85,7 @@ func (conn *Conn) readNext(buf []byte) ([]byte, error) {
 // sequenceMismatch reads the payload of a packet with an unexpected
 // sequence id: an ERR packet sent by the server on its own, such as 4031
 // ER_CLIENT_INTERACTION_TIMEOUT after wait_timeout (MySQL 8.0.24+, seq 0),
-// is returned as *Error rather than as ErrOutOfSync. Either way the
+// is returned as *Error rather than as a sequence mismatch. Either way the
 // connection is unusable.
 func (conn *Conn) sequenceMismatch(received byte, payloadLen int) error {
 	errSeq := errPacketSequenceMismatch(conn.sequence, received)
@@ -165,22 +165,14 @@ func writePacket(conn *Conn, writer io.Writer, buf []byte) error {
 
 		header := append(appendUint24(make([]byte, 0, headerSize), payloadLen), conn.sequence)
 
-		n, err := writer.Write(header)
+		_, err := writer.Write(header)
 		if err != nil {
 			return err
 		}
 
-		if n != headerSize {
-			return errConnWroteFewerBytesThanSent
-		}
-
-		n, err = writer.Write(buf[:payloadLen])
+		_, err = writer.Write(buf[:payloadLen])
 		if err != nil {
 			return err
-		}
-
-		if n != payloadLen {
-			return errConnWroteFewerBytesThanSent
 		}
 
 		conn.sequence++
@@ -203,20 +195,14 @@ func (conn *Conn) writePacket(buf []byte) (err error) {
 		return err
 	}
 
-	var n int
-
 	// https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_basic_compression_packet.html
 	packetLen := headerSize + len(buf)
 	if packetLen < writerMinCompressSize {
 		// write without compressing
 		header := append(appendUint24(nil, packetLen), conn.sequenceCompressed, 0x00, 0x00, 0x00)
 
-		n, err = conn.writer.Write(header)
+		_, err = conn.writer.Write(header)
 		if err != nil {
-			return err
-		}
-		if n != headerCompressSize {
-			err = errConnWroteFewerBytesThanSent
 			return err
 		}
 		// write buf
@@ -243,21 +229,13 @@ func (conn *Conn) writePacket(buf []byte) (err error) {
 		payloadLenCompressed := bufCompressed.Len()
 		header := appendUint24(append(appendUint24(nil, payloadLenCompressed), conn.sequenceCompressed), packetLen)
 
-		n, err = conn.writer.Write(header)
+		_, err = conn.writer.Write(header)
 		if err != nil {
-			return err
-		}
-		if n != headerCompressSize {
-			err = errConnWroteFewerBytesThanSent
 			return err
 		}
 		// write bufCompressed
-		n, err = conn.writer.Write(bufCompressed.Bytes())
+		_, err = conn.writer.Write(bufCompressed.Bytes())
 		if err != nil {
-			return err
-		}
-		if n != payloadLenCompressed {
-			err = errConnWroteFewerBytesThanSent
 			return err
 		}
 		err = conn.writer.Flush()
@@ -353,7 +331,7 @@ func (conn *Conn) readMoreResults() error {
 					return err
 				}
 				if buf[0] != iEOF {
-					return errExpectedEOF
+					return errUnexpectedPacketIdentity(buf[0])
 				}
 				conn.processEOFPacket(buf)
 			}
