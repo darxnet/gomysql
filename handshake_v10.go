@@ -8,8 +8,6 @@ import (
 	"errors"
 )
 
-var errMalformedHandshake = errors.New("malformed handshake packet")
-
 // handshakeV10 reads Protocol::HandshakeV10. The returned plugin name and
 // data are copies: the read buffer is reused by the next packet.
 //
@@ -79,7 +77,7 @@ func (conn *Conn) handshakeResponse41(authPluginName, authPluginData []byte) (er
 
 	if conn.config.IsCompress {
 		if conn.capFlags&clientCompress == 0 {
-			err = errors.New("server dont support compress")
+			err = errors.New("gomysql: server does not support compression")
 			_ = conn.conn.Close()
 			return err
 		}

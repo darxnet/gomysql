@@ -147,7 +147,7 @@ func (conn *Conn) Exec(query string, args ...any) (result *Result, err error) {
 				return result, err
 			}
 			if buf[0] != iEOF {
-				err = errors.New("protocol error: expected EOF_Packet")
+				err = errExpectedEOF
 				return result, err
 			}
 		}

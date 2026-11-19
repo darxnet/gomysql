@@ -94,7 +94,7 @@ func (stmt *Stmt) Query(args ...any) (rows *RowsBinary, err error) {
 				return rows, err
 			}
 			if buf[0] != iEOF {
-				err = errors.New("protocol error: expected EOF_Packet")
+				err = errExpectedEOF
 				return rows, err
 			}
 		}

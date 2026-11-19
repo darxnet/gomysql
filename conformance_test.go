@@ -983,3 +983,26 @@ func TestConformanceCompress(t *testing.T) {
 		})
 	}
 }
+
+// Server errors are *gomysql.Error with the number and SQL state.
+func TestConformanceServerError(t *testing.T) {
+	t.Parallel()
+
+	c := confConn(t, "b", "b")
+
+	_, err := c.Exec("SELECT id FROM no_such_table")
+
+	var e *gomysql.Error
+	if !errors.As(err, &e) || e.Number != 1146 || string(e.SQLState[:]) != "42S02" {
+		t.Fatalf("got %#v", err)
+	}
+
+	if !errors.Is(err, &gomysql.Error{Number: 1146}) {
+		t.Error("errors.Is by Number")
+	}
+
+	// The connection stays usable after a server error.
+	if err := c.Ping(); err != nil {
+		t.Errorf("Ping after error: %v", err)
+	}
+}

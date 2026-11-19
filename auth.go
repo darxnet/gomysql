@@ -116,7 +116,7 @@ func (conn *Conn) getAuthResponse(authPluginName, authPluginData []byte) (authRe
 		}
 
 	default:
-		err = errors.New("auth-plugin name `" + string(authPluginName) + "` not supported yet")
+		err = errors.New("gomysql: unsupported auth plugin " + string(authPluginName))
 		return authResponse, err
 	}
 }
@@ -154,7 +154,7 @@ func (conn *Conn) handshakeAuth(authPluginName, authPluginData []byte) (err erro
 			// Protocol::AuthSwitchRequest
 			authPluginNameIndex := bytes.IndexByte(buf, 0x00)
 			if authPluginNameIndex == -1 {
-				err = errors.New("wrong data in packet")
+				err = malformed("auth switch request")
 				return err
 			}
 			authPluginName = buf[1:authPluginNameIndex]
@@ -174,7 +174,7 @@ func (conn *Conn) handshakeAuth(authPluginName, authPluginData []byte) (err erro
 		case "sha256_password", "caching_sha2_password":
 			pubPem, _ := pem.Decode(buf[1:])
 			if pubPem.Type != "" && pubPem.Type != "RSA PUBLIC KEY" {
-				err = errors.New("server: wrong rsa key type: " + pubPem.Type)
+				err = malformed("RSA key type " + pubPem.Type)
 				return err
 			}
 			var parsedKey any
@@ -183,7 +183,7 @@ func (conn *Conn) handshakeAuth(authPluginName, authPluginData []byte) (err erro
 				return err
 			}
 			if pubKey, ok := parsedKey.(*rsa.PublicKey); !ok {
-				err = errors.New("server: wrong rsa key data")
+				err = malformed("RSA key")
 				return err
 			} else {
 				conn.config.ServerPubKey = pubKey

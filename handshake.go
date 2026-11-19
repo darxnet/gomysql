@@ -1,8 +1,7 @@
 package gomysql
 
 import (
-	"errors"
-	"strconv"
+	"fmt"
 )
 
 // handshake reads Protocol::HandshakeV10. Servers older than MySQL 4.1
@@ -26,5 +25,5 @@ func (conn *Conn) handshake() (authPluginName, authPluginData []byte, err error)
 		return authPluginName, authPluginData, err
 	}
 
-	return nil, nil, errors.Join(errServerTooOld, errors.New("protocol version "+strconv.Itoa(int(buf[0]))))
+	return nil, nil, fmt.Errorf("%w: protocol version %d", errServerTooOld, buf[0])
 }

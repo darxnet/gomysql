@@ -99,8 +99,11 @@ func TestHandshakeError(t *testing.T) {
 	})
 
 	_, err := Open(cfg)
-	if err == nil || err.Error() != "ERROR 1129 (): Host 'x' is blocked" {
-		t.Errorf("Open: %v", err)
+
+	var e *Error
+	if !errors.As(err, &e) || e.Number != 1129 || e.SQLState != [5]byte{} ||
+		err.Error() != "Error 1129: Host 'x' is blocked" {
+		t.Errorf("Open: %#v", err)
 	}
 }
 
