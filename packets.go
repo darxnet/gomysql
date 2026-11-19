@@ -8,8 +8,9 @@ import (
 // columns, and COM_STMT_PREPARE_OK counts them in 2 bytes.
 const maxColumns = 0xffff
 
-// https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_basic_eof_packet.html
-func (conn *Conn) readUntilEOF() (err error) {
+// readUntilEOF skips rows, text or binary, up to the packet that ends
+// them. A row never starts with 0xff, so that is an ERR packet.
+func (conn *Conn) readUntilEOF() error {
 	for {
 		buf, err := conn.readPacket()
 		if err != nil {
@@ -21,10 +22,6 @@ func (conn *Conn) readUntilEOF() (err error) {
 			return conn.processEOFPacket(buf)
 		case buf[0] == iERR:
 			return conn.processERRPacket(buf)
-		case buf[0] == iOK:
-			// do nothing, just read unprocessed packets
-		default:
-			return errUnexpectedPacketIdentity(buf[0])
 		}
 	}
 }

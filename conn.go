@@ -7,7 +7,6 @@ import (
 
 type Conn struct {
 	conn         net.Conn
-	errLast      error
 	compress     *compression // nil unless the compressed protocol is on
 	config       Config
 	server       string

@@ -142,23 +142,12 @@ func (conn *Conn) Exec(query string, args ...any) (result *Result, err error) {
 		}
 
 		// the rows
-		for {
-			buf, err = conn.readPacket()
-			if err != nil {
-				conn.errLast = err
-				return result, err
-			}
-
-			switch {
-			case isEOF(buf): // EOF, or OK with the EOF header under CLIENT_DEPRECATE_EOF
-				return result, err
-			case buf[0] == iERR:
-				conn.errLast = conn.processERRPacket(buf)
-				return result, err
-			default:
-				continue
-			}
+		err = conn.readUntilEOF()
+		if err != nil {
+			return nil, err
 		}
+
+		return result, nil
 	}
 }
 

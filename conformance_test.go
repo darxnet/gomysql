@@ -51,7 +51,6 @@ var knownBugs = map[string]string{
 	"TestConformanceSQLInjection/1_OR_1=1":              "phase 9: interpolation",
 	"TestConformanceSQLInjection/'_OR_'1'='1":           "phase 9: interpolation",
 	"TestConformanceTx/tx":                              "phase 9: Tx.Exec args",
-	"TestConformanceErrorRecovery/rows-close-early":     "phase 5: early Rows.Close",
 	"TestConformanceQueryNoRows/do":                     "phase 5: Query without result set",
 	"TestConformanceAuth/c2":                            "phase 7: caching_sha2_password",
 }
