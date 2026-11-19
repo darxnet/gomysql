@@ -11,6 +11,7 @@ package gomysql_test
 // GOMYSQL_KNOWN_BUGS=1 to run them anyway.
 
 import (
+	"crypto/rand"
 	"crypto/tls"
 	"database/sql"
 	"errors"
@@ -1121,4 +1122,93 @@ func TestConformanceTLS(t *testing.T) {
 	}
 
 	compressRoundTrip(t, c, 100_000)
+}
+
+// Compressed requests whose packet count differs from their frame count
+// (a payload just under 16 MB is one packet but two frames), and
+// incompressible payloads of 16 MB and more, whose compressed frame would
+// be larger than the plain one.
+func TestConformanceCompressEdges(t *testing.T) {
+	t.Parallel()
+
+	const wrapper = len("SELECT LENGTH('')") + 1 // and the command byte
+
+	sizes := map[string]int{
+		"one-packet-two-frames": 0xffffff - 2 - wrapper,
+		"exactly-one-packet":    0xffffff - wrapper,
+		"incompressible-16MB":   -(16 << 20),
+		"incompressible-20MB":   -(20 << 20),
+	}
+
+	for name, n := range sizes {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			c := confCompressConn(t, max(n, -n)+1024)
+
+			if n > 0 {
+				compressRoundTrip(t, c, n)
+
+				return
+			}
+
+			blob := make([]byte, -n)
+			_, _ = rand.Read(blob)
+
+			stmt, err := c.Prepare("SELECT LENGTH(?)")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			rows, err := stmt.Query(blob)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = rows.Close() }()
+
+			var length int64
+			if !rows.Next() {
+				t.Fatalf("no row: %v", rows.Err())
+			}
+
+			if err := rows.Scan(&length); err != nil {
+				t.Fatal(err)
+			}
+
+			if length != int64(-n) {
+				t.Errorf("server got %d bytes, want %d", length, -n)
+			}
+		})
+	}
+}
+
+// confCompressConn opens a compressed connection, skipping the test when
+// the server does not accept packets of need bytes.
+func confCompressConn(t *testing.T, need int) *gomysql.Conn {
+	t.Helper()
+
+	addr := os.Getenv("GOMYSQL_ADDR")
+	if addr == "" {
+		t.Skip("GOMYSQL_ADDR not set")
+	}
+
+	c, err := gomysql.Open(gomysql.Config{
+		Protocol: "tcp", Address: addr, User: "b", Password: "b", DbName: "gomysql", IsCompress: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = c.Close() })
+
+	var maxPacket int
+	if err := c.QueryRow("SELECT @@max_allowed_packet").Scan(&maxPacket); err != nil {
+		t.Fatal(err)
+	}
+
+	if need > maxPacket {
+		t.Skipf("max_allowed_packet is %d", maxPacket)
+	}
+
+	return c
 }

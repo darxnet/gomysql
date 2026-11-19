@@ -125,7 +125,10 @@ func (conn *Conn) handshakeResponse41(authPluginName, authPluginData []byte) (er
 			return err
 		}
 		conn.conn = tlsConn
-		conn.reader.reset(tlsConn)
+		err = conn.reader.switchTo(tlsConn)
+		if err != nil {
+			return err
+		}
 	}
 
 	// username

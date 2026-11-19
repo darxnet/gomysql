@@ -4,14 +4,6 @@ import (
 	"encoding/binary"
 )
 
-// appendUint24 appends n as a 3-byte little-endian integer, the size field
-// of packet headers.
-func appendUint24(dst []byte, n int) []byte {
-	dst = binary.LittleEndian.AppendUint32(dst, uint32(n)) //nolint:gosec // G115: packet sizes are below 1<<24
-
-	return dst[:len(dst)-1]
-}
-
 // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_basic_eof_packet.html
 func (conn *Conn) readUntilEOF() (err error) {
 	for {

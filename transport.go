@@ -1,8 +1,6 @@
 package gomysql
 
 import (
-	"bytes"
-	"compress/zlib"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -21,11 +19,23 @@ func newPacketReader(rd io.Reader, size int) packetReader {
 	return packetReader{rd: rd, buf: make([]byte, size)}
 }
 
-// reset switches to rd (after the TLS handshake or when compression starts)
-// and drops buffered data, of which there is none at those points.
+// reset switches to rd and drops buffered data.
 func (p *packetReader) reset(rd io.Reader) {
 	p.rd = rd
 	p.r, p.w = 0, 0
+}
+
+// switchTo is reset for a protocol switch (TLS, compression), where the
+// server sends nothing until the client speaks: buffered data means the
+// stream is out of sync.
+func (p *packetReader) switchTo(rd io.Reader) error {
+	if p.r != p.w {
+		return outOfSync("data before a protocol switch")
+	}
+
+	p.reset(rd)
+
+	return nil
 }
 
 // next returns the next n bytes. A slice of the buffer has its capacity
@@ -93,89 +103,15 @@ func (p *packetReader) nextLarge(n int) ([]byte, error) {
 	return b, nil
 }
 
-// compressedReader turns the compressed protocol back into the plain packet
-// stream: each frame has a 7-byte header (compressed length, compressed
-// sequence id, uncompressed length; 0 means the payload is not compressed).
-//
-// https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_basic_compression.html
-type compressedReader struct {
-	zr  io.ReadCloser
-	seq *byte
-	out []byte // decoded data not yet read is out[pos:]
-	dec []byte // reused buffer for decompressed frames
-	br  bytes.Reader
-	src packetReader
-	pos int
+// appendUint24 appends n as a 3-byte little-endian integer, the size field
+// of packet headers.
+func appendUint24(dst []byte, n int) []byte {
+	dst = binary.LittleEndian.AppendUint32(dst, uint32(n)) //nolint:gosec // G115: packet sizes are below 1<<24
+
+	return dst[:len(dst)-1]
 }
 
-func (c *compressedReader) Read(p []byte) (int, error) {
-	for c.pos == len(c.out) {
-		if err := c.readFrame(); err != nil {
-			return 0, err
-		}
-	}
-
-	n := copy(p, c.out[c.pos:])
-	c.pos += n
-
-	return n, nil
-}
-
-func (c *compressedReader) readFrame() error {
-	h, err := c.src.next(headerCompressSize)
-	if err != nil {
-		return err
-	}
-
-	compressedLen := uint24(h)
-	seq := h[3]
-	plainLen := uint24(h[4:])
-
-	if seq != *c.seq {
-		return errPacketSequenceMismatch(*c.seq, seq)
-	}
-
-	*c.seq++
-
-	payload, err := c.src.next(compressedLen)
-	if err != nil {
-		return err
-	}
-
-	c.pos = 0
-
-	if plainLen == 0 {
-		// payload stays valid: src is read again only when out is used up
-		c.out = payload
-
-		return nil
-	}
-
-	c.br.Reset(payload)
-
-	if c.zr == nil {
-		c.zr, err = zlib.NewReader(&c.br)
-	} else {
-		err = c.zr.(zlib.Resetter).Reset(&c.br, nil) //nolint:forcetypeassert // zlib readers implement Resetter
-	}
-
-	if err != nil {
-		return malformed("compressed frame: " + err.Error())
-	}
-
-	if cap(c.dec) < plainLen {
-		c.dec = make([]byte, plainLen)
-	}
-
-	c.out = c.dec[:plainLen]
-
-	if _, err := io.ReadFull(c.zr, c.out); err != nil {
-		return malformed("compressed frame: " + err.Error())
-	}
-
-	return nil
-}
-
+// uint24 reads a 3-byte little-endian integer.
 func uint24(b []byte) int {
 	return int(b[0]) | int(b[1])<<8 | int(b[2])<<16
 }
@@ -194,11 +130,15 @@ func (conn *Conn) readPacket() ([]byte, error) {
 		}
 
 		n, seq := uint24(h), h[3]
-		if seq != conn.sequence {
+
+		// Under compression the server syncs the packet sequence id to the
+		// frame sequence id on every flush, and neither MySQL nor MariaDB
+		// checks it there (go-sql-driver does the same).
+		if seq != conn.sequence && conn.compress == nil {
 			return nil, conn.sequenceMismatch(seq, n)
 		}
 
-		conn.sequence++
+		conn.sequence = seq + 1
 
 		payload, err := conn.reader.next(n)
 		if err != nil {
@@ -216,7 +156,13 @@ func (conn *Conn) readPacket() ([]byte, error) {
 			}
 		}
 
-		joined = append(joined, payload...)
+		// A full packet is larger than the read buffer, so it is a new
+		// slice from nextLarge and can be kept without a copy.
+		if joined == nil {
+			joined = payload
+		} else {
+			joined = append(joined, payload...)
+		}
 	}
 }
 
@@ -267,7 +213,9 @@ func appendPackets[T string | []byte](dst []byte, seq *byte, com []byte, arg T) 
 // followed by arg.
 func writeCommand[T string | []byte](conn *Conn, com byte, arg T) error {
 	conn.sequence = 0
-	conn.sequenceCompressed = 0
+	if conn.compress != nil {
+		conn.compress.seq = 0
+	}
 
 	return writePackets(conn, []byte{com}, arg)
 }
@@ -284,91 +232,11 @@ func writePackets[T string | []byte](conn *Conn, com []byte, arg T) error {
 		conn.wbuf = b[:0]
 	}
 
-	if conn.isCompress {
+	if conn.compress != nil {
 		return conn.writeCompressed(b)
 	}
 
 	_, err := conn.conn.Write(b)
 
 	return err
-}
-
-// writeCompressed sends the packets in plain as compressed frames of at most
-// maxPayloadSize uncompressed bytes; frames under writerMinCompressSize
-// bytes are sent uncompressed. zlib writes straight into the output buffer
-// after a reserved header, which is filled in once the length is known.
-func (conn *Conn) writeCompressed(plain []byte) error {
-	w := appendWriter{b: conn.cbuf[:0]}
-
-	for {
-		chunk := plain[:min(len(plain), maxPayloadSize)]
-		plain = plain[len(chunk):]
-
-		start := len(w.b)
-		w.b = append(w.b, make([]byte, headerCompressSize)...)
-		plainLen := 0
-
-		if len(chunk) < writerMinCompressSize {
-			w.b = append(w.b, chunk...)
-		} else {
-			plainLen = len(chunk)
-			conn.zw.Reset(&w)
-
-			if _, err := conn.zw.Write(chunk); err != nil {
-				return err
-			}
-
-			if err := conn.zw.Close(); err != nil {
-				return err
-			}
-		}
-
-		h := w.b[start : start+headerCompressSize]
-		putUint24(h, len(w.b)-start-headerCompressSize)
-		h[3] = conn.sequenceCompressed
-		putUint24(h[4:], plainLen)
-		conn.sequenceCompressed++
-
-		if len(plain) == 0 {
-			break
-		}
-	}
-
-	if cap(w.b) <= writeBufferKeep {
-		conn.cbuf = w.b[:0]
-	}
-
-	_, err := conn.conn.Write(w.b)
-
-	return err
-}
-
-// appendWriter is an io.Writer that appends to b.
-type appendWriter struct {
-	b []byte
-}
-
-func (w *appendWriter) Write(p []byte) (int, error) {
-	w.b = append(w.b, p...)
-
-	return len(p), nil
-}
-
-// putUint24 writes n as a 3-byte little-endian integer into b[:3].
-func putUint24(b []byte, n int) {
-	var tmp [4]byte
-
-	binary.LittleEndian.PutUint32(tmp[:], uint32(n)) //nolint:gosec // G115: packet sizes are below 1<<24
-	copy(b[:3], tmp[:3])
-}
-
-// startCompression switches both directions to the compressed protocol,
-// after the authentication succeeded.
-func (conn *Conn) startCompression() {
-	conn.isCompress = true
-	conn.zw = zlib.NewWriter(nil)
-	conn.reader.reset(&compressedReader{
-		src: newPacketReader(conn.conn, readerBufferSize),
-		seq: &conn.sequenceCompressed,
-	})
 }

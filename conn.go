@@ -1,7 +1,6 @@
 package gomysql
 
 import (
-	"compress/zlib"
 	"crypto/tls"
 	"net"
 )
@@ -9,22 +8,18 @@ import (
 type Conn struct {
 	conn         net.Conn
 	errLast      error
-	zw           *zlib.Writer // compressed protocol only
+	compress     *compression // nil unless the compressed protocol is on
 	config       Config
 	server       string
 	reader       packetReader
 	wbuf         []byte // reused write buffer
-	cbuf         []byte // reused buffer for compressed frames
 	lastInsertId uint64
 	rowsAffected uint64
 	id           uint32
 	capFlags     uint32
 	statusFlags  uint16
 	charSet      byte
-	isCompress   bool
 	sequence     byte
-
-	sequenceCompressed byte
 }
 
 func (conn *Conn) dial() error {
@@ -34,7 +29,7 @@ func (conn *Conn) dial() error {
 	}
 
 	conn.conn = nc
-	conn.isCompress = false
+	conn.compress = nil
 
 	if conn.reader.buf == nil {
 		conn.reader = newPacketReader(nc, readerBufferSize)
@@ -59,7 +54,6 @@ func (conn *Conn) getTlsConfig() *tls.Config {
 // On failure the socket is closed.
 func (conn *Conn) Conn() error {
 	conn.sequence = 0
-	conn.sequenceCompressed = 0
 	conn.capFlags = 0
 
 	if err := conn.dial(); err != nil {
