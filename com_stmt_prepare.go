@@ -1,9 +1,5 @@
 package gomysql
 
-import (
-	"encoding/binary"
-)
-
 const comStmtPrepare = 0x16
 
 // Prepare prepares query on the server (COM_STMT_PREPARE).
@@ -29,13 +25,22 @@ func (conn *Conn) Prepare(query string) (*Stmt, error) {
 
 	// COM_STMT_PREPARE_OK: 0x00, statement id (4), number of columns (2),
 	// number of params (2), filler, warning count (2).
-	le := binary.LittleEndian
+	d := decoder{buf: buf}
+	d.skip(1)
+	id := d.uint32()
+	columns := d.uint16()
+	params := d.uint16()
+
+	if err := d.err("COM_STMT_PREPARE_OK"); err != nil {
+		return nil, err
+	}
+
 	stmt := &Stmt{
 		conn:    conn,
 		query:   query,
-		id:      le.Uint32(buf[1:]),
-		columns: make([]ColumnDefinition, le.Uint16(buf[5:])),
-		params:  make([]ColumnDefinition, le.Uint16(buf[7:])),
+		id:      id,
+		columns: make([]ColumnDefinition, columns),
+		params:  make([]ColumnDefinition, params),
 	}
 
 	if err := conn.readColumns(stmt.params); err != nil {

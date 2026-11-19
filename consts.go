@@ -9,11 +9,12 @@ const (
 )
 
 const (
-	readerBufferSize int = 0xffff // 64K
-	// writerBufferSize only batches small packets: bufio.Writer sends a
-	// write larger than its buffer straight to the socket.
-	writerBufferSize      int = 4096
-	writerMinCompressSize int = 50
+	// readerBufferSize is the read buffer of a connection; a packet that
+	// does not fit is read into a new slice.
+	readerBufferSize = 64 << 10
+
+	// writerMinCompressSize is the smallest chunk worth compressing.
+	writerMinCompressSize = 50
 )
 
 const isFewer64bit = uint64(^uint(0)) < ^uint64(0)

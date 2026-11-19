@@ -1,6 +1,7 @@
 package gomysql
 
 import (
+	"bytes"
 	"encoding/binary"
 )
 
@@ -33,7 +34,7 @@ func lenDecInt(b []byte) (n uint64, size int) {
 	case 0xfd:
 		return uint64(le.Uint16(b[1:3])) | uint64(b[3])<<16, 4
 	case 0xfe:
-		return le.Uint64(b[1:9]), 9 //nolint:gosec // G602: bounds checks are ROADMAP phase 4
+		return le.Uint64(b[1:9]), 9 //nolint:gosec // G602: rows are bounds-checked by the row decoder of ROADMAP phase 6
 	}
 
 	return uint64(b[0]), 1
@@ -47,7 +48,7 @@ func isEOF(buf []byte) bool {
 }
 
 // https://dev.mysql.com/doc/internals/en/com-query-response.html#packet-ProtocolText::ResultsetRow
-func isNUll(b byte) bool {
+func isNull(b byte) bool {
 	return b == 0xfb
 }
 
@@ -66,39 +67,34 @@ func appendLenEncBytes(dst, value []byte) []byte {
 // (aliasing buf) and the number of bytes it took.
 func lenDecString(buf []byte) (s []byte, size int) {
 	n, pos := lenDecInt(buf)
-	end := pos + int(n) //nolint:gosec // G115: lengths come from the server; bounds checks are ROADMAP phase 4
+	end := pos + int(n) //nolint:gosec // G115: rows are bounds-checked by the row decoder of ROADMAP phase 6
 
 	return buf[pos:end], end
 }
 
-// parse reads Protocol::ColumnDefinition41 from buf. Name is copied; the
-// other names alias buf.
-func (column *ColumnDefinition) parse(buf []byte) {
-	var pos, n int
+// parse reads Protocol::ColumnDefinition41 from buf. The names are copied
+// into one new slice, since buf is reused by the next read.
+func (column *ColumnDefinition) parse(buf []byte) error {
+	d := decoder{buf: bytes.Clone(buf)}
+	column.Catalog = d.lenEncString()
+	column.Schema = d.lenEncString()
+	column.Table = d.lenEncString()
+	column.OrgTable = d.lenEncString()
+	column.Name = d.lenEncString()
+	column.OrgName = d.lenEncString()
+	d.skip(1) // length of the fixed-length fields, always 0x0c
 
-	names := []*[]byte{
-		&column.Catalog, &column.Schema, &column.Table,
-		&column.OrgTable, &column.Name, &column.OrgName,
-	}
+	// The character set has 2 bytes; the low one is enough for the known
+	// ones.
+	column.CharSet = d.uint8()
+	d.skip(1)
 
-	for _, field := range names {
-		*field, n = lenDecString(buf[pos:])
-		pos += n
-	}
+	column.Len = d.uint32()
+	column.Type = d.uint8()
+	column.Flags = d.uint16()
+	column.Decimals = d.uint8()
 
-	column.Name = append([]byte(nil), column.Name...)
-
-	pos++ // length of the fixed-length fields, always 0x0c
-
-	column.CharSet = buf[pos] // character set (2 bytes); the low byte is enough for the known ones
-	pos += 2
-	column.Len = binary.LittleEndian.Uint32(buf[pos:])
-	pos += 4
-	column.Type = buf[pos]
-	pos++
-	column.Flags = binary.LittleEndian.Uint16(buf[pos:])
-	pos += 2
-	column.Decimals = buf[pos]
+	return d.err("column definition")
 }
 
 // readColumns reads a column definition into each element of columns,
@@ -115,9 +111,34 @@ func (conn *Conn) readColumns(columns []ColumnDefinition) error {
 			return err
 		}
 
-		columns[i].parse(buf)
+		if err := columns[i].parse(buf); err != nil {
+			return err
+		}
 	}
 
+	return conn.readColumnsEOF()
+}
+
+// skipColumns reads the column definitions of a result set that starts
+// with buf, the column count, without keeping them.
+func (conn *Conn) skipColumns(buf []byte) error {
+	n, err := columnCount(buf)
+	if err != nil {
+		return err
+	}
+
+	for range n {
+		if _, err := conn.readPacket(); err != nil {
+			return err
+		}
+	}
+
+	return conn.readColumnsEOF()
+}
+
+// readColumnsEOF reads the EOF packet after column definitions, which
+// CLIENT_DEPRECATE_EOF leaves out.
+func (conn *Conn) readColumnsEOF() error {
 	if conn.capFlags&clientDeprecateEOF != 0 {
 		return nil
 	}
@@ -127,7 +148,7 @@ func (conn *Conn) readColumns(columns []ColumnDefinition) error {
 		return err
 	}
 
-	if buf[0] != iEOF {
+	if !isEOF(buf) {
 		return errUnexpectedPacketIdentity(buf[0])
 	}
 

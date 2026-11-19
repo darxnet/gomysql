@@ -2,6 +2,7 @@ package gomysql
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 )
 
@@ -40,11 +41,12 @@ func (e *Error) Is(target error) bool {
 var ErrBadConn = errors.New("gomysql: bad connection")
 
 var (
-	errServerTooOld         = errors.New("gomysql: server too old, MySQL 4.1 protocol required")
-	errOldPassword          = errors.New("gomysql: server requested the insecure mysql_old_password")
-	errServerDontSupportSSL = errors.New("gomysql: server does not support TLS")
-	errLocalInfile          = errors.New("gomysql: LOAD DATA LOCAL INFILE is not supported")
-	errMalformedHandshake   = malformed("handshake")
+	errServerTooOld                 = errors.New("gomysql: server too old, MySQL 4.1 protocol required")
+	errOldPassword                  = errors.New("gomysql: server requested the insecure mysql_old_password")
+	errServerDontSupportSSL         = errors.New("gomysql: server does not support TLS")
+	errServerDontSupportCompression = errors.New("gomysql: server does not support compression")
+	errLocalInfile                  = errors.New("gomysql: LOAD DATA LOCAL INFILE is not supported")
+	errMalformedHandshake           = malformed("handshake")
 
 	errPacketPayloadEmpty = malformed("empty payload")
 )
@@ -61,11 +63,11 @@ func malformed(msg string) error { return &wrapped{ErrBadConn, "malformed packet
 func outOfSync(msg string) error { return &wrapped{ErrBadConn, "commands out of sync: " + msg} }
 
 func errUnexpectedPacketIdentity(b byte) error {
-	return outOfSync("unexpected packet type " + b2hex(b))
+	return outOfSync(fmt.Sprintf("unexpected packet type %#02x", b))
 }
 
 func errPacketSequenceMismatch(expected, received byte) error {
-	return outOfSync("sequence id " + b2string(received) + ", expected " + b2string(expected))
+	return outOfSync(fmt.Sprintf("sequence id %d, expected %d", received, expected))
 }
 
 func errExecuteUnsupportedArg(argType string) error {
@@ -81,5 +83,5 @@ func errScanDestFewerThanSource(field string) error {
 }
 
 func errScanUnsupportedPair(from byte, toType string) error {
-	return errors.New("gomysql: cannot Scan column type " + b2hex(from) + " into " + toType)
+	return fmt.Errorf("gomysql: cannot Scan column type %#02x into %s", from, toType)
 }

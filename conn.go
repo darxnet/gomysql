@@ -7,7 +7,6 @@ import (
 
 type Conn struct {
 	conn         net.Conn
-	errLast      error
 	compress     *compression // nil unless the compressed protocol is on
 	config       Config
 	server       string
@@ -18,7 +17,6 @@ type Conn struct {
 	id           uint32
 	capFlags     uint32
 	statusFlags  uint16
-	charSet      byte
 	sequence     byte
 }
 
@@ -51,8 +49,13 @@ func (conn *Conn) getTlsConfig() *tls.Config {
 }
 
 // Conn (re)establishes the connection: dial, handshake and authentication.
-// On failure the socket is closed.
+// The previous socket, if any, is closed first. On failure the new socket
+// is closed too.
 func (conn *Conn) Conn() error {
+	if conn.conn != nil {
+		_ = conn.conn.Close()
+	}
+
 	conn.sequence = 0
 	conn.capFlags = 0
 
@@ -68,6 +71,8 @@ func (conn *Conn) Conn() error {
 	return err
 }
 
+// connect runs the connection phase on a new socket. It never closes the
+// socket: Conn does that on failure.
 func (conn *Conn) connect() error {
 	authPluginName, authPluginData, err := conn.handshake()
 	if err != nil {
