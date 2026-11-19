@@ -20,9 +20,9 @@ func (stmt *Stmt) Query(args ...any) (rows *RowsBinary, err error) {
 		return rows, err
 	}
 
-	// COM_STMT_EXECUTE: command, stmt-id, flags (no cursor), iteration-count 1
+	// COM_STMT_EXECUTE after the command byte: stmt-id, flags (no cursor),
+	// iteration-count 1
 	buf := make([]byte, 0, 16)
-	buf = append(buf, comStmtExecute)
 	buf = binary.LittleEndian.AppendUint32(buf, stmt.id)
 	buf = append(buf, 0x00)
 	buf = binary.LittleEndian.AppendUint32(buf, 1)
@@ -52,9 +52,7 @@ func (stmt *Stmt) Query(args ...any) (rows *RowsBinary, err error) {
 		buf = append(buf, values...)
 	}
 
-	stmt.conn.sequence = 0
-	stmt.conn.sequenceCompressed = 0
-	err = stmt.conn.writePacket(buf)
+	err = writeCommand(stmt.conn, comStmtExecute, buf)
 	if err != nil {
 		_ = stmt.conn.conn.Close()
 		return rows, err

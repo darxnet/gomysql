@@ -20,7 +20,7 @@ type Stmt struct {
 }
 
 func (stmt *Stmt) Close() error {
-	return stmt.conn.writePacketComBytes(comStmtClose, binary.LittleEndian.AppendUint32(nil, stmt.id))
+	return writeCommand(stmt.conn, comStmtClose, binary.LittleEndian.AppendUint32(nil, stmt.id))
 }
 
 type RowsBinary struct {

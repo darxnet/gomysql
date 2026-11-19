@@ -8,7 +8,7 @@ const comStatistics byte = 0x08
 // If the returned string is of zero length an error message is returned by mysql_stat
 // to the conn application instead of the actual empty statistics string.
 func (conn *Conn) Statistics() (s string, err error) {
-	err = conn.writePacketCom(comStatistics)
+	err = writeCommand(conn, comStatistics, "")
 	if err != nil {
 		return s, err
 	}

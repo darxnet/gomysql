@@ -20,7 +20,7 @@ func (conn *Conn) Query(query string, args ...any) (rows *RowsText, err error) {
 		}
 	}
 
-	err = conn.writePacketComStr(comQuery, query)
+	err = writeCommand(conn, comQuery, query)
 	if err != nil {
 		return rows, err
 	}
@@ -99,7 +99,7 @@ func (conn *Conn) Exec(query string, args ...any) (result *Result, err error) {
 		}
 	}
 
-	err = conn.writePacketComStr(comQuery, query)
+	err = writeCommand(conn, comQuery, query)
 	if err != nil {
 		return result, err
 	}

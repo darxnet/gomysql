@@ -11,6 +11,7 @@ package gomysql_test
 // GOMYSQL_KNOWN_BUGS=1 to run them anyway.
 
 import (
+	"crypto/tls"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -51,7 +52,6 @@ var knownBugs = map[string]string{
 	"TestConformanceTx/tx":                              "phase 9: Tx.Exec args",
 	"TestConformanceErrorRecovery/rows-close-early":     "phase 5: early Rows.Close",
 	"TestConformanceQueryNoRows/do":                     "phase 5: Query without result set",
-	"TestConformanceCompress/100000":                    "phase 4: compressed packets read with one Read",
 	"TestConformanceAuth/c2":                            "phase 7: caching_sha2_password",
 }
 
@@ -947,7 +947,7 @@ func hasCachingSHA2(t *testing.T) bool {
 func TestConformanceCompress(t *testing.T) {
 	t.Parallel()
 
-	for _, n := range []int{1, 1000, 100_000} {
+	for _, n := range []int{1, 1000, 100_000, 3 << 20, 20 << 20} {
 		t.Run(strconv.Itoa(n), func(t *testing.T) {
 			t.Parallel()
 			knownBug(t)
@@ -965,21 +965,46 @@ func TestConformanceCompress(t *testing.T) {
 			}
 			defer func() { _ = c.Close() }()
 
-			for range 3 {
-				var s string
-				if err := c.QueryRow("SELECT REPEAT('x', ?)", n).Scan(&s); err != nil {
-					t.Fatal(err)
-				}
+			var maxPacket int
+			if err := c.QueryRow("SELECT @@max_allowed_packet").Scan(&maxPacket); err != nil {
+				t.Fatal(err)
+			}
 
-				if len(s) != n {
-					t.Fatalf("got %d bytes, want %d", len(s), n)
-				}
+			if n > maxPacket-1024 {
+				t.Skipf("max_allowed_packet is %d", maxPacket)
+			}
 
-				if err := c.Ping(); err != nil {
-					t.Fatalf("ping: %v", err)
-				}
+			for range 2 {
+				compressRoundTrip(t, c, n)
 			}
 		})
+	}
+}
+
+// compressRoundTrip sends and receives n bytes, then pings.
+func compressRoundTrip(t *testing.T, c *gomysql.Conn, n int) {
+	t.Helper()
+
+	var s string
+	if err := c.QueryRow("SELECT REPEAT('x', ?)", n).Scan(&s); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(s) != n {
+		t.Fatalf("got %d bytes, want %d", len(s), n)
+	}
+
+	var length int
+	if err := c.QueryRow("SELECT LENGTH('" + strings.Repeat("y", n) + "')").Scan(&length); err != nil {
+		t.Fatal(err)
+	}
+
+	if length != n {
+		t.Fatalf("server got %d bytes, want %d", length, n)
+	}
+
+	if err := c.Ping(); err != nil {
+		t.Fatalf("ping: %v", err)
 	}
 }
 
@@ -1034,4 +1059,38 @@ func TestConformanceWaitTimeout(t *testing.T) {
 	}
 
 	t.Logf("Ping after wait_timeout: %v", err)
+}
+
+// TLS with the server's self-signed certificate.
+func TestConformanceTLS(t *testing.T) {
+	t.Parallel()
+
+	addr := os.Getenv("GOMYSQL_ADDR")
+	if addr == "" {
+		t.Skip("GOMYSQL_ADDR not set")
+	}
+
+	if hasCachingSHA2(t) && os.Getenv("GOMYSQL_KNOWN_BUGS") == "" {
+		t.Skip("known bug, phase 7: authentication over TLS fails on MySQL 8+")
+	}
+
+	c, err := gomysql.Open(gomysql.Config{
+		Protocol: "tcp", Address: addr, User: "b", Password: "b", DbName: "gomysql",
+		IsSSL: true, TlsConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // self-signed test server
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+
+	var cipher string
+	if err := c.QueryRow("SHOW SESSION STATUS LIKE 'Ssl_cipher'").Scan(new(string), &cipher); err != nil {
+		t.Fatal(err)
+	}
+
+	if cipher == "" {
+		t.Error("the session is not encrypted")
+	}
+
+	compressRoundTrip(t, c, 100_000)
 }

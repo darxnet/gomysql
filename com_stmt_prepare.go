@@ -10,7 +10,7 @@ const comStmtPrepare = 0x16
 //
 // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_stmt_prepare.html
 func (conn *Conn) Prepare(query string) (*Stmt, error) {
-	if err := conn.writePacketComStr(comStmtPrepare, query); err != nil {
+	if err := writeCommand(conn, comStmtPrepare, query); err != nil {
 		return nil, err
 	}
 
