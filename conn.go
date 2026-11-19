@@ -1,7 +1,6 @@
 package gomysql
 
 import (
-	"bytes"
 	"compress/zlib"
 	"crypto/tls"
 	"net"
@@ -15,7 +14,7 @@ type Conn struct {
 	server       string
 	reader       packetReader
 	wbuf         []byte // reused write buffer
-	zbuf         bytes.Buffer
+	cbuf         []byte // reused buffer for compressed frames
 	lastInsertId uint64
 	rowsAffected uint64
 	id           uint32

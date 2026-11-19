@@ -3,6 +3,7 @@ package gomysql
 import (
 	"bytes"
 	"compress/zlib"
+	"encoding/binary"
 	"errors"
 	"io"
 )
@@ -293,23 +294,25 @@ func writePackets[T string | []byte](conn *Conn, com []byte, arg T) error {
 }
 
 // writeCompressed sends the packets in plain as compressed frames of at most
-// maxPayloadSize uncompressed bytes. Frames under writerMinCompressSize
-// bytes are sent uncompressed.
+// maxPayloadSize uncompressed bytes; frames under writerMinCompressSize
+// bytes are sent uncompressed. zlib writes straight into the output buffer
+// after a reserved header, which is filled in once the length is known.
 func (conn *Conn) writeCompressed(plain []byte) error {
-	var out bytes.Buffer
+	w := appendWriter{b: conn.cbuf[:0]}
 
 	for {
 		chunk := plain[:min(len(plain), maxPayloadSize)]
 		plain = plain[len(chunk):]
 
+		start := len(w.b)
+		w.b = append(w.b, make([]byte, headerCompressSize)...)
+		plainLen := 0
+
 		if len(chunk) < writerMinCompressSize {
-			out.Write(appendUint24(nil, len(chunk)))
-			out.WriteByte(conn.sequenceCompressed)
-			out.Write([]byte{0, 0, 0})
-			out.Write(chunk)
+			w.b = append(w.b, chunk...)
 		} else {
-			conn.zbuf.Reset()
-			conn.zw.Reset(&conn.zbuf)
+			plainLen = len(chunk)
+			conn.zw.Reset(&w)
 
 			if _, err := conn.zw.Write(chunk); err != nil {
 				return err
@@ -318,13 +321,12 @@ func (conn *Conn) writeCompressed(plain []byte) error {
 			if err := conn.zw.Close(); err != nil {
 				return err
 			}
-
-			out.Write(appendUint24(nil, conn.zbuf.Len()))
-			out.WriteByte(conn.sequenceCompressed)
-			out.Write(appendUint24(nil, len(chunk)))
-			out.Write(conn.zbuf.Bytes())
 		}
 
+		h := w.b[start : start+headerCompressSize]
+		putUint24(h, len(w.b)-start-headerCompressSize)
+		h[3] = conn.sequenceCompressed
+		putUint24(h[4:], plainLen)
 		conn.sequenceCompressed++
 
 		if len(plain) == 0 {
@@ -332,9 +334,32 @@ func (conn *Conn) writeCompressed(plain []byte) error {
 		}
 	}
 
-	_, err := conn.conn.Write(out.Bytes())
+	if cap(w.b) <= writeBufferKeep {
+		conn.cbuf = w.b[:0]
+	}
+
+	_, err := conn.conn.Write(w.b)
 
 	return err
+}
+
+// appendWriter is an io.Writer that appends to b.
+type appendWriter struct {
+	b []byte
+}
+
+func (w *appendWriter) Write(p []byte) (int, error) {
+	w.b = append(w.b, p...)
+
+	return len(p), nil
+}
+
+// putUint24 writes n as a 3-byte little-endian integer into b[:3].
+func putUint24(b []byte, n int) {
+	var tmp [4]byte
+
+	binary.LittleEndian.PutUint32(tmp[:], uint32(n)) //nolint:gosec // G115: packet sizes are below 1<<24
+	copy(b[:3], tmp[:3])
 }
 
 // startCompression switches both directions to the compressed protocol,
