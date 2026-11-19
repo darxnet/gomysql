@@ -2,26 +2,11 @@ package gomysql
 
 import (
 	"database/sql"
-	"encoding/binary"
 	"errors"
 	"io"
 	"reflect"
 	"time"
 )
-
-const comStmtClose byte = 0x19
-
-type Stmt struct {
-	conn    *Conn
-	query   string
-	columns []ColumnDefinition
-	params  []ColumnDefinition
-	id      uint32
-}
-
-func (stmt *Stmt) Close() error {
-	return writeCommand(stmt.conn, comStmtClose, binary.LittleEndian.AppendUint32(nil, stmt.id))
-}
 
 type RowsBinary struct {
 	stmt    *Stmt
