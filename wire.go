@@ -47,11 +47,6 @@ func isEOF(buf []byte) bool {
 	return buf[0] == iEOF && len(buf) < maxPayloadSize
 }
 
-// https://dev.mysql.com/doc/internals/en/com-query-response.html#packet-ProtocolText::ResultsetRow
-func isNull(b byte) bool {
-	return b == 0xfb
-}
-
 // appendLenEncString appends Protocol::LengthEncodedString.
 func appendLenEncString(dst []byte, value string) []byte {
 	dst = appendLenEncInt(dst, uint64(len(value)))
@@ -61,15 +56,6 @@ func appendLenEncString(dst []byte, value string) []byte {
 func appendLenEncBytes(dst, value []byte) []byte {
 	dst = appendLenEncInt(dst, uint64(len(value)))
 	return append(dst, value...)
-}
-
-// lenDecString reads Protocol::LengthEncodedString; it returns the string
-// (aliasing buf) and the number of bytes it took.
-func lenDecString(buf []byte) (s []byte, size int) {
-	n, pos := lenDecInt(buf)
-	end := pos + int(n) //nolint:gosec // G115: rows are bounds-checked by the row decoder of ROADMAP phase 6
-
-	return buf[pos:end], end
 }
 
 // decoder reads the fields of a packet payload in order. A read past the
@@ -123,6 +109,14 @@ func (d *decoder) uint32() uint32 {
 	return 0
 }
 
+func (d *decoder) uint64() uint64 {
+	if b := d.take(8); b != nil {
+		return binary.LittleEndian.Uint64(b)
+	}
+
+	return 0
+}
+
 // lenEncInt reads Protocol::LengthEncodedInteger.
 //
 // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_basic_dt_integers.html
@@ -133,11 +127,7 @@ func (d *decoder) lenEncInt() uint64 {
 	case 0xfd:
 		return uint64(d.uint16()) | uint64(d.uint8())<<16
 	case 0xfe:
-		if b := d.take(8); b != nil {
-			return binary.LittleEndian.Uint64(b)
-		}
-
-		return 0
+		return d.uint64()
 	case 0xfb, 0xff: // NULL in a row, and an ERR packet header
 		d.bad = true
 		return 0

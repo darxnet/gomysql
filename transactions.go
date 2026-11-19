@@ -34,10 +34,10 @@ func (tx *Tx) Prepare(query string) (stmt *Stmt, err error) {
 	return tx.conn.Prepare(query)
 }
 
-func (tx *Tx) Query(query string, args ...any) (rows *RowsText, err error) {
+func (tx *Tx) Query(query string, args ...any) (rows *Rows, err error) {
 	return tx.conn.Query(query, args...)
 }
 
-func (tx *Tx) QueryRow(query string, args ...any) (row *RowText) {
+func (tx *Tx) QueryRow(query string, args ...any) (row *Row) {
 	return tx.conn.QueryRow(query, args)
 }

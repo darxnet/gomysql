@@ -82,7 +82,7 @@ const comStmtExecute byte = 0x17
 // returns its rows. A statement without a result set has no rows.
 //
 // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_stmt_execute.html
-func (stmt *Stmt) Query(args ...any) (*RowsBinary, error) {
+func (stmt *Stmt) Query(args ...any) (*Rows, error) {
 	if err := stmt.execute(args); err != nil {
 		return nil, err
 	}
@@ -96,7 +96,7 @@ func (stmt *Stmt) Query(args ...any) (*RowsBinary, error) {
 		return nil, err
 	}
 
-	return &RowsBinary{resultRows{conn: stmt.conn, done: n == 0, columns: stmt.columns}}, nil
+	return &Rows{conn: stmt.conn, done: n == 0, columns: stmt.columns, binary: true}, nil
 }
 
 // Exec executes the prepared statement with args and returns its result.

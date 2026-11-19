@@ -73,15 +73,3 @@ func errPacketSequenceMismatch(expected, received byte) error {
 func errExecuteUnsupportedArg(argType string) error {
 	return errors.New("gomysql: unsupported argument type " + argType)
 }
-
-func errScanUnsupportedDest(destType string) error {
-	return errors.New("gomysql: unsupported Scan destination " + destType)
-}
-
-func errScanDestFewerThanSource(field string) error {
-	return errors.New("gomysql: Scan destination too small for column " + field)
-}
-
-func errScanUnsupportedPair(from byte, toType string) error {
-	return fmt.Errorf("gomysql: cannot Scan column type %#02x into %s", from, toType)
-}
