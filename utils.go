@@ -48,7 +48,7 @@ func isEOF(buf []byte) bool {
 }
 
 // https://dev.mysql.com/doc/internals/en/com-query-response.html#packet-ProtocolText::ResultsetRow
-func isNUll(b byte) bool {
+func isNull(b byte) bool {
 	return b == 0xfb
 }
 

@@ -87,3 +87,16 @@ func TestUnsolicitedError(t *testing.T) {
 		t.Errorf("Ping: %v, want error 4031", err)
 	}
 }
+
+func TestErrorMessages(t *testing.T) {
+	t.Parallel()
+
+	for err, want := range map[error]string{
+		errUnexpectedPacketIdentity(3):  "gomysql: bad connection: commands out of sync: unexpected packet type 0x03",
+		errPacketSequenceMismatch(1, 7): "gomysql: bad connection: commands out of sync: sequence id 7, expected 1",
+	} {
+		if err.Error() != want {
+			t.Errorf("%q, want %q", err, want)
+		}
+	}
+}

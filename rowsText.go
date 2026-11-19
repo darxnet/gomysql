@@ -76,7 +76,7 @@ func (rows *RowsText) Scan(dest ...any) error {
 	var pos int
 
 	for i := range dest {
-		if isNUll(buf[pos]) {
+		if isNull(buf[pos]) {
 			continue
 		}
 

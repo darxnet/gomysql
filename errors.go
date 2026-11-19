@@ -2,6 +2,7 @@ package gomysql
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 )
 
@@ -61,11 +62,11 @@ func malformed(msg string) error { return &wrapped{ErrBadConn, "malformed packet
 func outOfSync(msg string) error { return &wrapped{ErrBadConn, "commands out of sync: " + msg} }
 
 func errUnexpectedPacketIdentity(b byte) error {
-	return outOfSync("unexpected packet type " + b2hex(b))
+	return outOfSync(fmt.Sprintf("unexpected packet type %#02x", b))
 }
 
 func errPacketSequenceMismatch(expected, received byte) error {
-	return outOfSync("sequence id " + b2string(received) + ", expected " + b2string(expected))
+	return outOfSync(fmt.Sprintf("sequence id %d, expected %d", received, expected))
 }
 
 func errExecuteUnsupportedArg(argType string) error {
@@ -81,5 +82,5 @@ func errScanDestFewerThanSource(field string) error {
 }
 
 func errScanUnsupportedPair(from byte, toType string) error {
-	return errors.New("gomysql: cannot Scan column type " + b2hex(from) + " into " + toType)
+	return fmt.Errorf("gomysql: cannot Scan column type %#02x into %s", from, toType)
 }

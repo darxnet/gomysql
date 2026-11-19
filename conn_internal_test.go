@@ -2,7 +2,6 @@ package gomysql
 
 import (
 	"bytes"
-	"strconv"
 	"testing"
 )
 
@@ -26,65 +25,5 @@ func TestGetAuthResponse(t *testing.T) {
 
 	if !bytes.Equal(exp, res) {
 		t.Fatalf("unexpected authResponse\n%v\n%v", exp, res)
-	}
-}
-
-func BenchmarkConvStringMain(b *testing.B) {
-	b.ReportAllocs()
-	for range b.N {
-		if strconv.FormatUint(uint64(3), 10) != "3" {
-			b.Fatal()
-		}
-		if strconv.FormatUint(uint64(23), 10) != "23" {
-			b.Fatal()
-		}
-		if strconv.FormatUint(uint64(123), 10) != "123" {
-			b.Fatal()
-		}
-	}
-}
-
-func BenchmarkConvStringCC(b *testing.B) {
-	b.ReportAllocs()
-	for range b.N {
-		if b2string(3) != "3" {
-			b.Fatal()
-		}
-		if b2string(23) != "23" {
-			b.Fatal()
-		}
-		if b2string(123) != "123" {
-			b.Fatal()
-		}
-	}
-}
-
-func BenchmarkConvHexMain(b *testing.B) {
-	b.ReportAllocs()
-	for range b.N {
-		if strconv.FormatUint(uint64(3), 16) != "3" {
-			b.Fatal()
-		}
-		if strconv.FormatUint(uint64(23), 16) != "17" {
-			b.Fatal()
-		}
-		if strconv.FormatUint(uint64(123), 16) != "7b" {
-			b.Fatal()
-		}
-	}
-}
-
-func BenchmarkConvHexCC(b *testing.B) {
-	b.ReportAllocs()
-	for range b.N {
-		if b2hex(3) != "0x03" {
-			b.Fatal()
-		}
-		if b2hex(23) != "0x17" {
-			b.Fatal()
-		}
-		if b2hex(123) != "0x7b" {
-			b.Fatal()
-		}
 	}
 }

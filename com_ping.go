@@ -2,9 +2,14 @@ package gomysql
 
 const comPing byte = 0x0e
 
-func (conn *Conn) Ping() (err error) {
-	err = writeCommand(conn, comPing, "")
-	if err != nil {
+// Ping checks that the connection is alive (COM_PING).
+func (conn *Conn) Ping() error {
+	return simpleCommand(conn, comPing, "")
+}
+
+// simpleCommand sends a command that the server answers with OK or ERR.
+func simpleCommand(conn *Conn, com byte, arg string) error {
+	if err := writeCommand(conn, com, arg); err != nil {
 		return err
 	}
 
@@ -16,13 +21,9 @@ func (conn *Conn) Ping() (err error) {
 	switch buf[0] {
 	case iOK:
 		return conn.processOKPacket(buf)
-
 	case iERR:
-		err = conn.processERRPacket(buf)
-		return err
-
+		return conn.processERRPacket(buf)
 	default:
-		err = errUnexpectedPacketIdentity(buf[0])
-		return err
+		return errUnexpectedPacketIdentity(buf[0])
 	}
 }

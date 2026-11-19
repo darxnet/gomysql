@@ -2,29 +2,21 @@ package gomysql
 
 const comStatistics byte = 0x08
 
-// Statistics returns a human readable string of some internal status vars.
-//
-// The statistics are refreshed at the time of executing this command.
-// If the returned string is of zero length an error message is returned by mysql_stat
-// to the conn application instead of the actual empty statistics string.
-func (conn *Conn) Statistics() (s string, err error) {
-	err = writeCommand(conn, comStatistics, "")
-	if err != nil {
-		return s, err
+// Statistics returns the server's status line, such as "Uptime: 5
+// Threads: 1 Questions: 2 ..." (COM_STATISTICS).
+func (conn *Conn) Statistics() (string, error) {
+	if err := writeCommand(conn, comStatistics, ""); err != nil {
+		return "", err
 	}
 
 	buf, err := conn.readPacket()
 	if err != nil {
-		return s, err
+		return "", err
 	}
 
-	switch buf[0] {
-	case iERR:
-		err = conn.processERRPacket(buf)
-		return s, err
-
-	default:
-		s = string(buf)
-		return s, err
+	if buf[0] == iERR {
+		return "", conn.processERRPacket(buf)
 	}
+
+	return string(buf), nil
 }
