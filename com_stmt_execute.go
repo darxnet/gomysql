@@ -54,7 +54,6 @@ func (stmt *Stmt) Query(args ...any) (rows *RowsBinary, err error) {
 
 	err = writeCommand(stmt.conn, comStmtExecute, buf)
 	if err != nil {
-		_ = stmt.conn.conn.Close()
 		return rows, err
 	}
 

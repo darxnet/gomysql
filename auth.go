@@ -148,7 +148,6 @@ func (conn *Conn) handshakeAuth(authPluginName, authPluginData []byte) (err erro
 	case iEOF:
 		if len(buf) == 1 {
 			// Protocol::OldAuthSwitchRequest asks for mysql_old_password.
-			_ = conn.conn.Close()
 			err = errOldPassword
 
 			return err
@@ -228,13 +227,11 @@ func (conn *Conn) handshakeAuth(authPluginName, authPluginData []byte) (err erro
 func (conn *Conn) authSwitchResponse(authPluginName, authPluginData []byte) (err error) {
 	authResponse, err := conn.getAuthResponse(authPluginName, authPluginData)
 	if err != nil {
-		_ = conn.conn.Close()
 		return err
 	}
 
 	err = conn.writePacket(authResponse)
 	if err != nil {
-		_ = conn.conn.Close()
 		return err
 	}
 

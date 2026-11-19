@@ -68,7 +68,6 @@ func (conn *Conn) handshakeResponse41(authPluginName, authPluginData []byte) (er
 	if conn.config.IsCompress {
 		if conn.capFlags&clientCompress == 0 {
 			err = errors.New("gomysql: server does not support compression")
-			_ = conn.conn.Close()
 			return err
 		}
 		capFlags |= clientCompress
@@ -98,7 +97,6 @@ func (conn *Conn) handshakeResponse41(authPluginName, authPluginData []byte) (er
 	if conn.config.IsSSL {
 		if conn.capFlags&clientSSL == 0 {
 			err = errServerDontSupportSSL
-			_ = conn.conn.Close()
 			return err
 		}
 		capFlags |= clientSSL
@@ -106,13 +104,11 @@ func (conn *Conn) handshakeResponse41(authPluginName, authPluginData []byte) (er
 
 		err = conn.writePacket(buf)
 		if err != nil {
-			_ = conn.conn.Close()
 			return err
 		}
 		tlsConn := tls.Client(conn.conn, conn.getTlsConfig())
 		err = tlsConn.Handshake()
 		if err != nil {
-			_ = conn.conn.Close()
 			return err
 		}
 		conn.conn = tlsConn
@@ -130,7 +126,6 @@ func (conn *Conn) handshakeResponse41(authPluginName, authPluginData []byte) (er
 	capFlags |= clientPluginAuth | clientSecureConn
 	authResponse, err := conn.getAuthResponse(authPluginName, authPluginData)
 	if err != nil {
-		_ = conn.conn.Close()
 		return err
 	}
 
@@ -173,10 +168,5 @@ func (conn *Conn) handshakeResponse41(authPluginName, authPluginData []byte) (er
 	binary.LittleEndian.PutUint32(buf, capFlags)
 	conn.capFlags = capFlags
 
-	err = conn.writePacket(buf)
-	if err != nil {
-		_ = conn.conn.Close()
-	}
-
-	return err
+	return conn.writePacket(buf)
 }
