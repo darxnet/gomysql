@@ -2,70 +2,26 @@ package gomysql
 
 import (
 	"errors"
-	"io"
 	"reflect"
 	"time"
 )
 
+// RowsText is the result of Conn.Query, read in the text protocol.
 type RowsText struct {
-	conn    *Conn
-	errLast error
-
-	columns []ColumnDefinition
-
-	buf       []byte
-	isStopped bool
+	resultRows
 }
 
-func (rows *RowsText) Close() error {
-	if rows.errLast != nil {
-		return rows.errLast
-	}
-	if !rows.isStopped {
-		rows.errLast = rows.conn.readUntilEOF()
-		rows.isStopped = true
-	}
-	if rows.errLast == nil {
-		rows.errLast = rows.conn.readMoreResults()
-	}
+// Next reads the next row for Scan. It returns false at the end of the rows
+// or on an error, which Err returns.
+func (rows *RowsText) Next() bool { return rows.next() }
 
-	return rows.errLast
-}
+// Err returns the error that ended the rows, if any.
+func (rows *RowsText) Err() error { return rows.err }
 
-func (rows *RowsText) Err() error {
-	if rows.errLast != nil && !errors.Is(rows.errLast, io.EOF) {
-		return rows.errLast
-	}
-
-	return nil
-}
-
-func (rows *RowsText) Next() bool {
-	if rows.isStopped {
-		return false
-	}
-
-	buf, err := rows.conn.readPacket()
-	if err != nil {
-		rows.errLast = err
-		rows.isStopped = true
-		return false
-	}
-
-	switch {
-	case isEOF(buf): // EOF, or OK with the EOF header under CLIENT_DEPRECATE_EOF
-		rows.errLast = rows.conn.processEOFPacket(buf)
-		rows.isStopped = true
-		return false
-	case buf[0] == iERR:
-		rows.errLast = rows.conn.processERRPacket(buf)
-		rows.isStopped = true
-		return false
-	default:
-		rows.buf = buf
-		return true
-	}
-}
+// Close reads the rows left and the results that follow, so that the
+// connection can run the next command. It returns the error that ended
+// the rows, if any.
+func (rows *RowsText) Close() error { return rows.close() }
 
 func (rows *RowsText) Scan(dest ...any) error {
 	if len(rows.columns) != len(dest) {

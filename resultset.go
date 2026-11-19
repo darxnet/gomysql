@@ -45,6 +45,13 @@ func (column *ColumnDefinition) parse(buf []byte) error {
 	column.OrgTable = d.lenEncString()
 	column.Name = d.lenEncString()
 	column.OrgName = d.lenEncString()
+	column.parseFixed(&d)
+
+	return d.err("column definition")
+}
+
+// parseFixed reads the fixed-length fields that follow the names.
+func (column *ColumnDefinition) parseFixed(d *decoder) {
 	d.skip(1) // length of the fixed-length fields, always 0x0c
 
 	// The character set has 2 bytes; the low one is enough for the known
@@ -56,6 +63,26 @@ func (column *ColumnDefinition) parse(buf []byte) error {
 	column.Type = d.uint8()
 	column.Flags = d.uint16()
 	column.Decimals = d.uint8()
+}
+
+// update reads Protocol::ColumnDefinition41 from buf into a column read
+// before. Unless a name changed, only the fixed-length fields are set, so
+// the names are not copied again.
+func (column *ColumnDefinition) update(buf []byte) error {
+	d := decoder{buf: buf}
+
+	same := bytes.Equal(d.lenEncString(), column.Catalog) &&
+		bytes.Equal(d.lenEncString(), column.Schema) &&
+		bytes.Equal(d.lenEncString(), column.Table) &&
+		bytes.Equal(d.lenEncString(), column.OrgTable) &&
+		bytes.Equal(d.lenEncString(), column.Name) &&
+		bytes.Equal(d.lenEncString(), column.OrgName)
+
+	if !same || d.bad {
+		return column.parse(buf)
+	}
+
+	column.parseFixed(&d)
 
 	return d.err("column definition")
 }
@@ -82,14 +109,8 @@ func (conn *Conn) readColumns(columns []ColumnDefinition) error {
 	return conn.readColumnsEOF()
 }
 
-// skipColumns reads the column definitions of a result set that starts
-// with buf, the column count, without keeping them.
-func (conn *Conn) skipColumns(buf []byte) error {
-	n, err := columnCount(buf)
-	if err != nil {
-		return err
-	}
-
+// skipColumns reads n column definitions without keeping them.
+func (conn *Conn) skipColumns(n int) error {
 	for range n {
 		if _, err := conn.readPacket(); err != nil {
 			return err
@@ -140,25 +161,59 @@ func (conn *Conn) readUntilEOF() error {
 	}
 }
 
+// readResultHeader reads the first packet of the response to a command
+// that may return rows: OK, ERR, or the column count of a result set,
+// which it returns; the column definitions follow. Affected rows and last
+// insert id are those of an OK packet, 0 for a result set.
+//
+// https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_query_response.html
+func (conn *Conn) readResultHeader() (columns int, err error) {
+	conn.rowsAffected, conn.lastInsertId = 0, 0
+
+	buf, err := conn.readPacket()
+	if err != nil {
+		return 0, err
+	}
+
+	switch buf[0] {
+	case iOK:
+		return 0, conn.processOKPacket(buf)
+	case iERR:
+		return 0, conn.processERRPacket(buf)
+	case iLocalInfile:
+		// Not reached: the client does not set CLIENT_LOCAL_FILES.
+		return 0, errLocalInfile
+	default:
+		return columnCount(buf)
+	}
+}
+
+// skipResult reads the rest of a result whose header said columns, and
+// the results that follow it.
+func (conn *Conn) skipResult(columns int) error {
+	if columns > 0 {
+		if err := conn.skipColumns(columns); err != nil {
+			return err
+		}
+
+		if err := conn.readUntilEOF(); err != nil {
+			return err
+		}
+	}
+
+	return conn.readMoreResults()
+}
+
 // readMoreResults drains all result sets that follow the current one.
 func (conn *Conn) readMoreResults() error {
 	for conn.statusFlags&serverStatusMoreResultsExists != 0 {
-		buf, err := conn.readPacket()
+		n, err := conn.readResultHeader()
 		if err != nil {
 			return err
 		}
 
-		switch buf[0] {
-		case iOK:
-			if err := conn.processOKPacket(buf); err != nil {
-				return err
-			}
-		case iERR:
-			return conn.processERRPacket(buf)
-		case iLocalInfile:
-			return errLocalInfile
-		default:
-			if err := conn.skipColumns(buf); err != nil {
+		if n > 0 {
+			if err := conn.skipColumns(n); err != nil {
 				return err
 			}
 
@@ -181,4 +236,62 @@ func columnCount(buf []byte) (int, error) {
 	}
 
 	return int(n), nil
+}
+
+// resultRows is what RowsText and RowsBinary share: reading rows up to the
+// end of the result set, and draining what is left on Close.
+type resultRows struct {
+	conn    *Conn
+	columns []ColumnDefinition
+	buf     []byte // the current row
+	err     error
+	done    bool // the rows are read up to the end, or failed
+	closed  bool
+}
+
+func (r *resultRows) next() bool {
+	if r.done {
+		return false
+	}
+
+	buf, err := r.conn.readPacket()
+
+	switch {
+	case err != nil:
+		r.err = err
+	case isEOF(buf): // EOF, or OK with the EOF header under CLIENT_DEPRECATE_EOF
+		r.err = r.conn.processEOFPacket(buf)
+	case buf[0] == iERR:
+		r.err = r.conn.processERRPacket(buf)
+	default:
+		r.buf = buf
+
+		return true
+	}
+
+	r.buf, r.done = nil, true
+
+	return false
+}
+
+// close reads the rows not read yet and the results that follow, so that
+// the connection can run the next command. It returns the error that
+// ended the rows, if any.
+func (r *resultRows) close() error {
+	if r.closed {
+		return r.err
+	}
+
+	r.closed = true
+
+	if !r.done {
+		r.buf, r.done = nil, true
+		r.err = r.conn.readUntilEOF()
+	}
+
+	if r.err == nil {
+		r.err = r.conn.readMoreResults()
+	}
+
+	return r.err
 }

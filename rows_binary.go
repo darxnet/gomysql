@@ -3,68 +3,32 @@ package gomysql
 import (
 	"database/sql"
 	"errors"
-	"io"
 	"reflect"
 	"time"
 )
 
+// RowsBinary is the result of Stmt.Query, read in the binary protocol.
 type RowsBinary struct {
-	stmt    *Stmt
-	errLast error
-
-	buf       []byte
-	isStopped bool
+	resultRows
 }
 
-func (rows *RowsBinary) Close() error {
-	if rows.errLast != nil {
-		return rows.errLast
-	}
-	if !rows.isStopped {
-		rows.errLast = rows.stmt.conn.readUntilEOF()
-		rows.isStopped = true
-	}
-	if rows.errLast == nil {
-		rows.errLast = rows.stmt.conn.readMoreResults()
-	}
+// Next reads the next row for Scan. It returns false at the end of the rows
+// or on an error, which Err returns.
+func (rows *RowsBinary) Next() bool { return rows.next() }
 
-	return rows.errLast
-}
+// Err returns the error that ended the rows, if any.
+func (rows *RowsBinary) Err() error { return rows.err }
 
-func (rows *RowsBinary) Err() error {
-	if rows.errLast != nil && !errors.Is(rows.errLast, io.EOF) {
-		return rows.errLast
-	}
-
-	return nil
-}
-
-func (rows *RowsBinary) Next() bool {
-	buf, err := rows.stmt.conn.readPacket()
-	if err != nil {
-		rows.errLast = err
-		return false
-	}
-
-	switch {
-	case isEOF(buf): // EOF, or OK with the EOF header under CLIENT_DEPRECATE_EOF
-		rows.errLast = rows.stmt.conn.processEOFPacket(buf)
-		rows.isStopped = true
-		return false
-	case buf[0] == iERR:
-		rows.errLast = rows.stmt.conn.processERRPacket(buf)
-		return false
-	default:
-		rows.buf = buf
-		return true
-	}
-}
+// Close reads the rows left and the results that follow, so that the
+// connection can run the next command. It returns the error that ended
+// the rows, if any.
+func (rows *RowsBinary) Close() error { return rows.close() }
 
 // Scan copies the columns of the current row into dest.
 //
 //nolint:gocognit,gocyclo,maintidx,dupl,gosec // replaced by a single decode layer in ROADMAP phase 6
 func (rows *RowsBinary) Scan(dest ...any) error {
-	if len(rows.stmt.columns) != len(dest) {
+	if len(rows.columns) != len(dest) {
 		return errors.New("wrong dest count")
 	}
 
@@ -91,7 +55,7 @@ func (rows *RowsBinary) Scan(dest ...any) error {
 		case nil:
 			return errors.New("dest type error: nil")
 		case *any:
-			switch rows.stmt.columns[i].Type {
+			switch rows.columns[i].Type {
 			case myTypeString,
 				myTypeVarChar, myTypeVarString,
 				myTypeEnum, myTypeSet,
@@ -125,7 +89,7 @@ func (rows *RowsBinary) Scan(dest ...any) error {
 				continue
 			}
 		case *string:
-			switch rows.stmt.columns[i].Type {
+			switch rows.columns[i].Type {
 			case myTypeString,
 				myTypeVarChar, myTypeVarString,
 				myTypeEnum, myTypeSet,
@@ -139,7 +103,7 @@ func (rows *RowsBinary) Scan(dest ...any) error {
 				continue
 			}
 		case *[]byte:
-			switch rows.stmt.columns[i].Type {
+			switch rows.columns[i].Type {
 			case myTypeString,
 				myTypeVarChar, myTypeVarString,
 				myTypeEnum, myTypeSet,
@@ -152,7 +116,7 @@ func (rows *RowsBinary) Scan(dest ...any) error {
 				continue
 			}
 		case *sql.RawBytes:
-			switch rows.stmt.columns[i].Type {
+			switch rows.columns[i].Type {
 			case myTypeString,
 				myTypeVarChar, myTypeVarString,
 				myTypeEnum, myTypeSet,
@@ -165,7 +129,7 @@ func (rows *RowsBinary) Scan(dest ...any) error {
 				continue
 			}
 		case *time.Time:
-			switch rows.stmt.columns[i].Type {
+			switch rows.columns[i].Type {
 			case myTypeString,
 				myTypeVarChar, myTypeVarString,
 				myTypeEnum, myTypeSet,
@@ -183,10 +147,10 @@ func (rows *RowsBinary) Scan(dest ...any) error {
 				*d = tmp2
 				continue
 			default:
-				return errScanUnsupportedPair(rows.stmt.columns[i].Type, reflect.TypeOf(dest[i]).Name())
+				return errScanUnsupportedPair(rows.columns[i].Type, reflect.TypeOf(dest[i]).Name())
 			}
 		case *int:
-			switch rows.stmt.columns[i].Type {
+			switch rows.columns[i].Type {
 			case myTypeString,
 				myTypeVarChar, myTypeVarString,
 				myTypeEnum, myTypeSet,
@@ -213,7 +177,7 @@ func (rows *RowsBinary) Scan(dest ...any) error {
 				continue
 			case myTypeLongLong:
 				if isFewer64bit {
-					return errScanDestFewerThanSource(string(rows.stmt.columns[i].Name))
+					return errScanDestFewerThanSource(string(rows.columns[i].Name))
 				}
 				*d = int(rows.buf[pos]) | int(rows.buf[pos+1])<<8 |
 					int(rows.buf[pos+2])<<16 | int(rows.buf[pos+3])<<24 |
@@ -223,7 +187,7 @@ func (rows *RowsBinary) Scan(dest ...any) error {
 				continue
 			}
 		case *int8:
-			switch rows.stmt.columns[i].Type {
+			switch rows.columns[i].Type {
 			case myTypeString,
 				myTypeVarChar, myTypeVarString,
 				myTypeEnum, myTypeSet,
@@ -240,10 +204,10 @@ func (rows *RowsBinary) Scan(dest ...any) error {
 				pos += 1
 				continue
 			case myTypeShort, myTypeInt24, myTypeLong, myTypeLongLong:
-				return errScanDestFewerThanSource(string(rows.stmt.columns[i].Name))
+				return errScanDestFewerThanSource(string(rows.columns[i].Name))
 			}
 		case *int16:
-			switch rows.stmt.columns[i].Type {
+			switch rows.columns[i].Type {
 			case myTypeString,
 				myTypeVarChar, myTypeVarString,
 				myTypeEnum, myTypeSet,
@@ -264,10 +228,10 @@ func (rows *RowsBinary) Scan(dest ...any) error {
 				pos += 2
 				continue
 			case myTypeInt24, myTypeLong, myTypeLongLong:
-				return errScanDestFewerThanSource(string(rows.stmt.columns[i].Name))
+				return errScanDestFewerThanSource(string(rows.columns[i].Name))
 			}
 		case *int32:
-			switch rows.stmt.columns[i].Type {
+			switch rows.columns[i].Type {
 			case myTypeString,
 				myTypeVarChar, myTypeVarString,
 				myTypeEnum, myTypeSet,
@@ -293,10 +257,10 @@ func (rows *RowsBinary) Scan(dest ...any) error {
 				pos += 4
 				continue
 			case myTypeLongLong:
-				return errScanDestFewerThanSource(string(rows.stmt.columns[i].Name))
+				return errScanDestFewerThanSource(string(rows.columns[i].Name))
 			}
 		case *int64:
-			switch rows.stmt.columns[i].Type {
+			switch rows.columns[i].Type {
 			case myTypeString,
 				myTypeVarChar, myTypeVarString,
 				myTypeEnum, myTypeSet,
@@ -330,7 +294,7 @@ func (rows *RowsBinary) Scan(dest ...any) error {
 				continue
 			}
 		case *uint:
-			switch rows.stmt.columns[i].Type {
+			switch rows.columns[i].Type {
 			case myTypeString,
 				myTypeVarChar, myTypeVarString,
 				myTypeEnum, myTypeSet,
@@ -357,7 +321,7 @@ func (rows *RowsBinary) Scan(dest ...any) error {
 				continue
 			case myTypeLongLong:
 				if isFewer64bit {
-					return errScanDestFewerThanSource(string(rows.stmt.columns[i].Name))
+					return errScanDestFewerThanSource(string(rows.columns[i].Name))
 				}
 				*d = uint(rows.buf[pos]) | uint(rows.buf[pos+1])<<8 |
 					uint(rows.buf[pos+2])<<16 | uint(rows.buf[pos+3])<<24 |
@@ -367,7 +331,7 @@ func (rows *RowsBinary) Scan(dest ...any) error {
 				continue
 			}
 		case *uint8:
-			switch rows.stmt.columns[i].Type {
+			switch rows.columns[i].Type {
 			case myTypeString,
 				myTypeVarChar, myTypeVarString,
 				myTypeEnum, myTypeSet,
@@ -384,10 +348,10 @@ func (rows *RowsBinary) Scan(dest ...any) error {
 				pos += 1
 				continue
 			case myTypeShort, myTypeInt24, myTypeLong, myTypeLongLong:
-				return errScanDestFewerThanSource(string(rows.stmt.columns[i].Name))
+				return errScanDestFewerThanSource(string(rows.columns[i].Name))
 			}
 		case *uint16:
-			switch rows.stmt.columns[i].Type {
+			switch rows.columns[i].Type {
 			case myTypeString,
 				myTypeVarChar, myTypeVarString,
 				myTypeEnum, myTypeSet,
@@ -408,10 +372,10 @@ func (rows *RowsBinary) Scan(dest ...any) error {
 				pos += 2
 				continue
 			case myTypeInt24, myTypeLong, myTypeLongLong:
-				return errScanDestFewerThanSource(string(rows.stmt.columns[i].Name))
+				return errScanDestFewerThanSource(string(rows.columns[i].Name))
 			}
 		case *uint32:
-			switch rows.stmt.columns[i].Type {
+			switch rows.columns[i].Type {
 			case myTypeString,
 				myTypeVarChar, myTypeVarString,
 				myTypeEnum, myTypeSet,
@@ -437,10 +401,10 @@ func (rows *RowsBinary) Scan(dest ...any) error {
 				pos += 4
 				continue
 			case myTypeLongLong:
-				return errScanDestFewerThanSource(string(rows.stmt.columns[i].Name))
+				return errScanDestFewerThanSource(string(rows.columns[i].Name))
 			}
 		case *uint64:
-			switch rows.stmt.columns[i].Type {
+			switch rows.columns[i].Type {
 			case myTypeString,
 				myTypeVarChar, myTypeVarString,
 				myTypeEnum, myTypeSet,
@@ -487,7 +451,7 @@ func (rows *RowsBinary) Scan(dest ...any) error {
 		refDest = reflect.Indirect(refDest)
 
 		var refSrc reflect.Value
-		switch rows.stmt.columns[i].Type {
+		switch rows.columns[i].Type {
 		case myTypeString,
 			myTypeVarChar, myTypeVarString,
 			myTypeEnum, myTypeSet,
@@ -500,14 +464,14 @@ func (rows *RowsBinary) Scan(dest ...any) error {
 			refSrc = reflect.ValueOf(string(tmp))
 		case myTypeTiny, myTypeShort, myTypeInt24, myTypeLong, myTypeLongLong:
 			var tmp uint64
-			posN := rows.stmt.columns[i].intLen()
+			posN := rows.columns[i].intLen()
 			for i := range posN {
 				tmp |= uint64(rows.buf[pos+i]) << uint(8*i)
 			}
 			pos += posN
 			refSrc = reflect.ValueOf(tmp)
 		default:
-			return errScanUnsupportedPair(rows.stmt.columns[i].Type, reflect.TypeOf(dest[i]).Name())
+			return errScanUnsupportedPair(rows.columns[i].Type, reflect.TypeOf(dest[i]).Name())
 		}
 
 		if refSrc.Type().ConvertibleTo(refDest.Type()) {
@@ -515,7 +479,7 @@ func (rows *RowsBinary) Scan(dest ...any) error {
 			continue
 		}
 
-		return errScanUnsupportedPair(rows.stmt.columns[i].Type, reflect.TypeOf(dest[i]).Name())
+		return errScanUnsupportedPair(rows.columns[i].Type, reflect.TypeOf(dest[i]).Name())
 	}
 
 	return nil
