@@ -4,6 +4,10 @@ import (
 	"encoding/binary"
 )
 
+// maxColumns bounds the column count of a result set; MySQL allows 4096
+// columns, and COM_STMT_PREPARE_OK counts them in 2 bytes.
+const maxColumns = 0xffff
+
 // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_basic_eof_packet.html
 func (conn *Conn) readUntilEOF() (err error) {
 	for {
@@ -14,8 +18,7 @@ func (conn *Conn) readUntilEOF() (err error) {
 
 		switch {
 		case isEOF(buf): // EOF, or OK with the EOF header under CLIENT_DEPRECATE_EOF
-			conn.processEOFPacket(buf)
-			return nil
+			return conn.processEOFPacket(buf)
 		case buf[0] == iERR:
 			return conn.processERRPacket(buf)
 		case buf[0] == iOK:
@@ -36,28 +39,16 @@ func (conn *Conn) readMoreResults() error {
 
 		switch buf[0] {
 		case iOK:
-			conn.processOKPacket(buf)
+			if err := conn.processOKPacket(buf); err != nil {
+				return err
+			}
 		case iERR:
 			return conn.processERRPacket(buf)
 		case iLocalInfile:
 			return errLocalInfile
 		default:
-			columns, _ := lenDecInt(buf)
-			for range columns {
-				if _, err = conn.readPacket(); err != nil {
-					return err
-				}
-			}
-
-			if conn.capFlags&clientDeprecateEOF == 0 {
-				buf, err = conn.readPacket()
-				if err != nil {
-					return err
-				}
-				if buf[0] != iEOF {
-					return errUnexpectedPacketIdentity(buf[0])
-				}
-				conn.processEOFPacket(buf)
+			if err := conn.skipColumns(buf); err != nil {
+				return err
 			}
 
 			if err := conn.readUntilEOF(); err != nil {
@@ -69,24 +60,24 @@ func (conn *Conn) readMoreResults() error {
 	return nil
 }
 
-// https://dev.mysql.com/doc/internals/en/packet-OK_Packet.html
+// processOKPacket reads an OK packet, or an OK packet with the EOF header
+// that ends rows under CLIENT_DEPRECATE_EOF.
+//
 // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_basic_ok_packet.html
-func (conn *Conn) processOKPacket(buf []byte) {
-	var pos, posN int
+func (conn *Conn) processOKPacket(buf []byte) error {
+	d := decoder{buf: buf}
+	d.skip(1) // header: 0x00, or 0xfe
+	rowsAffected := d.lenEncInt()
+	lastInsertID := d.lenEncInt()
+	statusFlags := d.uint16()
 
-	pos += 1 // header: 0x00, or 0xfe under CLIENT_DEPRECATE_EOF
-
-	// affected rows
-	conn.rowsAffected, posN = lenDecInt(buf[pos:])
-	pos += posN
-
-	// last insert-id
-	conn.lastInsertId, posN = lenDecInt(buf[pos:])
-	pos += posN
-
-	if len(buf) >= pos+4 {
-		conn.statusFlags = uint16(buf[pos]) | uint16(buf[pos+1])<<8
+	if err := d.err("OK packet"); err != nil {
+		return err
 	}
+
+	conn.rowsAffected, conn.lastInsertId, conn.statusFlags = rowsAffected, lastInsertID, statusFlags
+
+	return nil
 }
 
 // https://dev.mysql.com/doc/internals/en/packet-ERR_Packet.html
@@ -112,8 +103,42 @@ func (conn *Conn) processERRPacket(buf []byte) error {
 	return e
 }
 
-func (conn *Conn) processEOFPacket(buf []byte) {
-	if len(buf) >= 5 {
-		conn.statusFlags = uint16(buf[3]) | uint16(buf[4])<<8
+// processEOFPacket reads the packet that ends column definitions or rows:
+// an EOF packet, or under CLIENT_DEPRECATE_EOF an OK packet with the EOF
+// header, whose status flags follow two length-encoded integers. Only the
+// status flags are kept: they tell whether more results follow.
+//
+// https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_basic_eof_packet.html
+func (conn *Conn) processEOFPacket(buf []byte) error {
+	d := decoder{buf: buf}
+	d.skip(1) // header 0xfe
+
+	if conn.capFlags&clientDeprecateEOF != 0 {
+		d.lenEncInt() // affected rows
+		d.lenEncInt() // last insert id
+	} else {
+		d.skip(2) // warnings
 	}
+
+	statusFlags := d.uint16()
+
+	if err := d.err("EOF packet"); err != nil {
+		return err
+	}
+
+	conn.statusFlags = statusFlags
+
+	return nil
+}
+
+// columnCount reads the column count that starts a result set.
+func columnCount(buf []byte) (int, error) {
+	d := decoder{buf: buf}
+	n := d.lenEncInt()
+
+	if d.bad || n == 0 || n > maxColumns {
+		return 0, malformed("column count")
+	}
+
+	return int(n), nil
 }

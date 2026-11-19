@@ -36,9 +36,12 @@ func (conn *Conn) Query(query string, args ...any) (rows *RowsText, err error) {
 		return rows, err
 
 	case iOK:
-		rows = &RowsText{conn: conn, isStopped: true}
-		conn.processOKPacket(buf)
-		return rows, err
+		err = conn.processOKPacket(buf)
+		if err != nil {
+			return nil, err
+		}
+
+		return &RowsText{conn: conn, isStopped: true}, nil
 
 	case iLocalInfile:
 		err = errLocalInfile
@@ -46,15 +49,15 @@ func (conn *Conn) Query(query string, args ...any) (rows *RowsText, err error) {
 
 	// ProtocolText::ResultSet
 	default:
-		rows = new(RowsText)
-		rows.conn = conn
-
 		// column count, then the column definitions; the rows follow
-		num, _ := lenDecInt(buf)
-		rows.columns = make([]ColumnDefinition, num)
-		err = conn.readColumns(rows.columns)
+		n, err := columnCount(buf)
+		if err != nil {
+			return nil, err
+		}
 
-		return rows, err
+		rows = &RowsText{conn: conn, columns: make([]ColumnDefinition, n)}
+
+		return rows, conn.readColumns(rows.columns)
 	}
 }
 
@@ -118,7 +121,11 @@ func (conn *Conn) Exec(query string, args ...any) (result *Result, err error) {
 		return result, err
 
 	case iOK:
-		conn.processOKPacket(buf)
+		err = conn.processOKPacket(buf)
+		if err != nil {
+			return nil, err
+		}
+
 		result.rowsAffected = conn.rowsAffected
 		result.lastInsertId = conn.lastInsertId
 		return result, err
@@ -129,27 +136,9 @@ func (conn *Conn) Exec(query string, args ...any) (result *Result, err error) {
 
 	// ProtocolText::ResultSet
 	default:
-		// number of columns in the resultSet
-		num, _ := lenDecInt(buf)
-
-		// the columns definition
-		for range num {
-			_, err = conn.readPacket()
-			if err != nil {
-				result.errLast = err
-				return result, err
-			}
-		}
-
-		if conn.capFlags&clientDeprecateEOF == 0 {
-			buf, err = conn.readPacket()
-			if err != nil {
-				return result, err
-			}
-			if buf[0] != iEOF {
-				err = errUnexpectedPacketIdentity(buf[0])
-				return result, err
-			}
+		err = conn.skipColumns(buf)
+		if err != nil {
+			return nil, err
 		}
 
 		// the rows

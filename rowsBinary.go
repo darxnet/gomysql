@@ -63,7 +63,7 @@ func (rows *RowsBinary) Next() bool {
 
 	switch {
 	case isEOF(buf): // EOF, or OK with the EOF header under CLIENT_DEPRECATE_EOF
-		rows.stmt.conn.processEOFPacket(buf)
+		rows.errLast = rows.stmt.conn.processEOFPacket(buf)
 		rows.isStopped = true
 		return false
 	case buf[0] == iERR:

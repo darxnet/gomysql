@@ -54,7 +54,7 @@ func (rows *RowsText) Next() bool {
 
 	switch {
 	case isEOF(buf): // EOF, or OK with the EOF header under CLIENT_DEPRECATE_EOF
-		rows.conn.processEOFPacket(buf)
+		rows.errLast = rows.conn.processEOFPacket(buf)
 		rows.isStopped = true
 		return false
 	case buf[0] == iERR:

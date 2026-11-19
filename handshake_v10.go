@@ -12,58 +12,49 @@ import (
 //
 // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_connection_phase_packets_protocol_handshake_v10.html
 func (conn *Conn) handshakeV10(buf []byte) (authPluginName, authPluginData []byte, err error) {
-	// protocol version, server version (string[NUL])
-	end := bytes.IndexByte(buf, 0x00)
-	if end < 0 || len(buf) < end+16 {
+	d := decoder{buf: buf}
+	d.skip(1) // protocol version
+	server := d.nulString()
+	id := d.uint32()
+	authPluginData = bytes.Clone(d.take(8)) // auth-plugin-data-part-1
+	d.skip(1)                               // filler
+	capFlags := uint32(d.uint16())          // capability flags, lower 2 bytes
+
+	if d.bad {
 		return nil, nil, errMalformedHandshake
 	}
 
-	conn.server = string(buf[1:end])
-	buf = buf[end+1:]
+	conn.server, conn.id, conn.capFlags = string(server), id, capFlags
 
-	// connection id (4), auth-plugin-data-part-1 (8), filler (1),
-	// capability flags, lower 2 bytes
-	le := binary.LittleEndian
-	conn.id = le.Uint32(buf)
-	authPluginData = append([]byte(nil), buf[4:12]...)
-	conn.capFlags |= uint32(le.Uint16(buf[13:]))
-	buf = buf[15:]
-
-	if len(buf) == 0 {
+	if len(d.buf) == 0 {
 		return nil, authPluginData, nil
 	}
 
-	// character set (1), status flags (2), capability flags, upper 2 bytes,
-	// length of auth-plugin-data (1), reserved (10)
-	if len(buf) < 16 {
-		return nil, nil, errMalformedHandshake
-	}
-
-	conn.charSet = buf[0]
-	conn.capFlags |= uint32(le.Uint16(buf[3:])) << 16
-	authPluginDataLen := int(buf[5])
-	buf = buf[16:]
+	d.skip(1) // character set
+	d.skip(2) // status flags
+	conn.capFlags |= uint32(d.uint16()) << 16
+	authPluginDataLen := int(d.uint8())
+	d.skip(10) // reserved
 
 	if conn.capFlags&clientSecureConn != 0 {
 		// auth-plugin-data-part-2: the rest of the data, at least 13 bytes
 		// (a 12-byte nonce tail and a NUL)
-		n := max(13, authPluginDataLen-8)
-		if len(buf) < n {
-			return nil, nil, errMalformedHandshake
-		}
-
-		authPluginData = append(authPluginData, buf[:n]...)
-		buf = buf[n:]
+		authPluginData = append(authPluginData, d.take(max(13, authPluginDataLen-8))...)
 	}
 
 	if conn.capFlags&clientPluginAuth != 0 {
 		// auth-plugin name (string[NUL]); before MySQL 5.5.10 and 5.6.2 the
 		// NUL may be missing (Bug#59453)
-		if end := bytes.IndexByte(buf, 0x00); end >= 0 {
-			buf = buf[:end]
+		name := d.rest()
+		if end := bytes.IndexByte(name, 0x00); end >= 0 {
+			name = name[:end]
 		}
 
-		authPluginName = append([]byte(nil), buf...)
+		authPluginName = bytes.Clone(name)
+	}
+
+	if d.bad {
+		return nil, nil, errMalformedHandshake
 	}
 
 	return authPluginName, authPluginData, nil

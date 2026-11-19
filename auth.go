@@ -131,7 +131,11 @@ func (conn *Conn) handshakeAuth(authPluginName, authPluginData []byte) (err erro
 
 	switch buf[0] {
 	case iOK:
-		conn.processOKPacket(buf)
+		err = conn.processOKPacket(buf)
+		if err != nil {
+			return err
+		}
+
 		if conn.config.IsCompress {
 			err = conn.startCompression()
 		}

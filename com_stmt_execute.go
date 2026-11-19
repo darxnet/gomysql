@@ -69,35 +69,15 @@ func (stmt *Stmt) Query(args ...any) (rows *RowsBinary, err error) {
 		return rows, err
 
 	case iOK:
-		stmt.conn.processOKPacket(buf)
-		return rows, err
+		return nil, stmt.conn.processOKPacket(buf)
 
 	default:
-		rows = new(RowsBinary)
-		rows.stmt = stmt
-
-		// number of columns in the resultSet
-		num, _ := lenDecInt(buf)
-
-		// we have all columns definitions in stmt, so skip it...
-		for range num {
-			_, err = stmt.conn.readPacket()
-			if err != nil {
-				return rows, err
-			}
-		}
-		if stmt.conn.capFlags&clientDeprecateEOF == 0 {
-			buf, err = stmt.conn.readPacket()
-			if err != nil {
-				return rows, err
-			}
-			if buf[0] != iEOF {
-				err = errUnexpectedPacketIdentity(buf[0])
-				return rows, err
-			}
+		// The column definitions are those of Prepare (ROADMAP phase 5).
+		if err := stmt.conn.skipColumns(buf); err != nil {
+			return nil, err
 		}
 
-		return rows, err
+		return &RowsBinary{stmt: stmt}, nil
 	}
 }
 

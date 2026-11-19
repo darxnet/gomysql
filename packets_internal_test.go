@@ -35,12 +35,16 @@ func TestProcessResultStatusFlags(t *testing.T) {
 	t.Parallel()
 
 	conn := &Conn{capFlags: clientProtocol41}
-	conn.processOKPacket([]byte{iOK, 0, 0, byte(serverStatusMoreResultsExists), 0, 0, 0})
+	if err := conn.processOKPacket([]byte{iOK, 0, 0, byte(serverStatusMoreResultsExists), 0, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
 	if conn.statusFlags&serverStatusMoreResultsExists == 0 {
 		t.Fatal("OK packet did not set SERVER_MORE_RESULTS_EXISTS")
 	}
 
-	conn.processEOFPacket([]byte{iEOF, 0, 0, 0, 0})
+	if err := conn.processEOFPacket([]byte{iEOF, 0, 0, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
 	if conn.statusFlags&serverStatusMoreResultsExists != 0 {
 		t.Fatal("EOF packet did not clear SERVER_MORE_RESULTS_EXISTS")
 	}

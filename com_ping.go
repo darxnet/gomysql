@@ -15,8 +15,7 @@ func (conn *Conn) Ping() (err error) {
 
 	switch buf[0] {
 	case iOK:
-		conn.processOKPacket(buf)
-		return err
+		return conn.processOKPacket(buf)
 
 	case iERR:
 		err = conn.processERRPacket(buf)
