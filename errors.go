@@ -41,11 +41,12 @@ func (e *Error) Is(target error) bool {
 var ErrBadConn = errors.New("gomysql: bad connection")
 
 var (
-	errServerTooOld         = errors.New("gomysql: server too old, MySQL 4.1 protocol required")
-	errOldPassword          = errors.New("gomysql: server requested the insecure mysql_old_password")
-	errServerDontSupportSSL = errors.New("gomysql: server does not support TLS")
-	errLocalInfile          = errors.New("gomysql: LOAD DATA LOCAL INFILE is not supported")
-	errMalformedHandshake   = malformed("handshake")
+	errServerTooOld                 = errors.New("gomysql: server too old, MySQL 4.1 protocol required")
+	errOldPassword                  = errors.New("gomysql: server requested the insecure mysql_old_password")
+	errServerDontSupportSSL         = errors.New("gomysql: server does not support TLS")
+	errServerDontSupportCompression = errors.New("gomysql: server does not support compression")
+	errLocalInfile                  = errors.New("gomysql: LOAD DATA LOCAL INFILE is not supported")
+	errMalformedHandshake           = malformed("handshake")
 
 	errPacketPayloadEmpty = malformed("empty payload")
 )

@@ -1071,7 +1071,7 @@ func TestConformanceTLS(t *testing.T) {
 	}
 
 	// have_ssl is gone in MySQL 8.0.26+, where TLS is always built in.
-	name, haveSSL, version := "", "YES", ""
+	name, haveSSL := "", "YES"
 	if err := confConn(t, "b", "b").QueryRow("SHOW VARIABLES LIKE 'have_ssl'").Scan(&name, &haveSSL); err != nil &&
 		!errors.Is(err, sql.ErrNoRows) {
 		t.Fatal(err)
@@ -1079,14 +1079,6 @@ func TestConformanceTLS(t *testing.T) {
 
 	if haveSSL != "YES" {
 		t.Skipf("the server has no TLS (have_ssl=%s)", haveSSL)
-	}
-
-	if err := confConn(t, "b", "b").QueryRow("SELECT VERSION()").Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-
-	if os.Getenv("GOMYSQL_KNOWN_BUGS") == "" && (hasCachingSHA2(t) || strings.Contains(version, "MariaDB")) {
-		t.Skip("known bug, phase 7: authentication over TLS fails on MySQL 8+ and MariaDB 11")
 	}
 
 	// MySQL 5.7 with OpenSSL 1.0.2 has no ECDHE, only the RSA key exchange,

@@ -17,7 +17,6 @@ type Conn struct {
 	id           uint32
 	capFlags     uint32
 	statusFlags  uint16
-	charSet      byte
 	sequence     byte
 }
 

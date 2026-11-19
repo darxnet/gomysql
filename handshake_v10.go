@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/binary"
-	"errors"
 )
 
 // handshakeV10 reads Protocol::HandshakeV10. The returned plugin name and
@@ -62,111 +61,139 @@ func (conn *Conn) handshakeV10(buf []byte) (authPluginName, authPluginData []byt
 
 // handshakeResponse41 sends Protocol::HandshakeResponse41, after an
 // SSLRequest and the TLS handshake when Config.IsSSL is set.
-func (conn *Conn) handshakeResponse41(authPluginName, authPluginData []byte) (err error) {
-	capFlags := clientProtocol41 | clientLongPassword
-
-	if conn.config.IsCompress {
-		if conn.capFlags&clientCompress == 0 {
-			err = errors.New("gomysql: server does not support compression")
-			return err
-		}
-		capFlags |= clientCompress
-	}
-
-	if conn.config.IsClientFoundRows {
-		capFlags |= clientFoundRows
-	}
-
-	if conn.capFlags&clientDeprecateEOF != 0 {
-		capFlags |= clientDeprecateEOF
-	}
-
-	if conn.config.Charset != 0 {
-		conn.charSet = conn.config.Charset
-	} else {
-		conn.charSet = CharSet_utf8mb4_general_ci
-	}
-
-	// capability flags (4, set below), max packet size (4), character set,
-	// 23 reserved bytes
-	buf := make([]byte, 32, 128)
-	binary.LittleEndian.PutUint32(buf[4:], maxPacketSize)
-	buf[8] = conn.charSet
-
-	// https://dev.mysql.com/doc/internals/en/connection-phase-packets.html#packet-Protocol::SSLRequest
-	if conn.config.IsSSL {
-		if conn.capFlags&clientSSL == 0 {
-			err = errServerDontSupportSSL
-			return err
-		}
-		capFlags |= clientSSL
-		binary.LittleEndian.PutUint32(buf, capFlags)
-
-		err = conn.writePacket(buf)
-		if err != nil {
-			return err
-		}
-		tlsConn := tls.Client(conn.conn, conn.getTlsConfig())
-		err = tlsConn.Handshake()
-		if err != nil {
-			return err
-		}
-		conn.conn = tlsConn
-		err = conn.reader.switchTo(tlsConn)
-		if err != nil {
-			return err
-		}
-	}
-
-	// username
-	buf = append(buf, conn.config.User...)
-	buf = append(buf, 0x00)
-
-	// auth-response
-	capFlags |= clientPluginAuth | clientSecureConn
+func (conn *Conn) handshakeResponse41(authPluginName, authPluginData []byte) error {
 	authResponse, err := conn.getAuthResponse(authPluginName, authPluginData)
 	if err != nil {
 		return err
 	}
 
-	if len(authResponse) > 255 {
-		capFlags |= clientPluginAuthLenEncClientData
+	capFlags, err := conn.clientCaps(len(authResponse))
+	if err != nil {
+		return err
 	}
 
-	// clientSecureConn is always set above: a length byte, or a
-	// length-encoded integer for a longer response
-	if len(authResponse) > 255 {
-		buf = appendLenEncBytes(buf, authResponse)
-	} else {
-		buf = append(buf, byte(len(authResponse))) //nolint:gosec // G115: at most 255
-		buf = append(buf, authResponse...)
+	charset := conn.config.Charset
+	if charset == 0 {
+		charset = CharSet_utf8mb4_general_ci
 	}
 
-	// database
-	if conn.config.DbName != "" {
-		capFlags |= clientConnectWithDB
+	// capability flags, max packet size, character set, 23 reserved bytes;
+	// this much alone is the SSLRequest
+	buf := make([]byte, 32, 128)
+	binary.LittleEndian.PutUint32(buf, capFlags)
+	binary.LittleEndian.PutUint32(buf[4:], maxPacketSize)
+	buf[8] = charset
+
+	if capFlags&clientSSL != 0 {
+		if err := conn.upgradeTLS(buf); err != nil {
+			return err
+		}
+	}
+
+	buf = append(buf, conn.config.User...)
+	buf = append(buf, 0x00)
+	buf = appendAuthResponse(buf, authResponse)
+
+	if capFlags&clientConnectWithDB != 0 {
 		buf = append(buf, conn.config.DbName...)
 		buf = append(buf, 0x00)
 	}
 
-	// auth plugin name
 	buf = append(buf, authPluginName...)
 	buf = append(buf, 0x00)
 
-	// attrs
-	if len(conn.config.Attr) > 0 {
-		capFlags |= clientConnectAttrs
-		var keyVal []byte
-		for key, val := range conn.config.Attr {
-			keyVal = appendLenEncString(keyVal, key)
-			keyVal = appendLenEncString(keyVal, val)
-		}
-		buf = appendLenEncInt(buf, uint64(len(keyVal)))
-		buf = append(buf, keyVal...)
+	if capFlags&clientConnectAttrs != 0 {
+		buf = appendConnectAttrs(buf, conn.config.Attr)
 	}
 
-	binary.LittleEndian.PutUint32(buf, capFlags)
 	conn.capFlags = capFlags
 
 	return conn.writePacket(buf)
+}
+
+// clientCaps returns the capability flags the client asks for, given those
+// the server offers in conn.capFlags.
+func (conn *Conn) clientCaps(authResponseLen int) (uint32, error) {
+	server := conn.capFlags
+	caps := clientProtocol41 | clientLongPassword | clientPluginAuth | clientSecureConn |
+		server&clientDeprecateEOF
+
+	if conn.config.IsCompress {
+		if server&clientCompress == 0 {
+			return 0, errServerDontSupportCompression
+		}
+
+		caps |= clientCompress
+	}
+
+	if conn.config.IsSSL {
+		if server&clientSSL == 0 {
+			return 0, errServerDontSupportSSL
+		}
+
+		caps |= clientSSL
+	}
+
+	if conn.config.IsClientFoundRows {
+		caps |= clientFoundRows
+	}
+
+	if conn.config.DbName != "" {
+		caps |= clientConnectWithDB
+	}
+
+	if len(conn.config.Attr) > 0 {
+		caps |= clientConnectAttrs
+	}
+
+	if authResponseLen > 255 {
+		caps |= clientPluginAuthLenEncClientData
+	}
+
+	return caps, nil
+}
+
+// upgradeTLS sends the SSLRequest and switches the connection to TLS.
+//
+// https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_connection_phase_packets_protocol_ssl_request.html
+func (conn *Conn) upgradeTLS(sslRequest []byte) error {
+	if err := conn.writePacket(sslRequest); err != nil {
+		return err
+	}
+
+	tlsConn := tls.Client(conn.conn, conn.getTlsConfig())
+	if err := tlsConn.Handshake(); err != nil {
+		return err
+	}
+
+	conn.conn = tlsConn
+
+	return conn.reader.switchTo(tlsConn)
+}
+
+// appendAuthResponse appends the auth response after a length byte, or as
+// a length-encoded string when it is longer than 255 bytes
+// (CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA).
+func appendAuthResponse(dst, authResponse []byte) []byte {
+	if len(authResponse) > 255 {
+		return appendLenEncBytes(dst, authResponse)
+	}
+
+	dst = append(dst, byte(len(authResponse))) //nolint:gosec // G115: at most 255
+
+	return append(dst, authResponse...)
+}
+
+// appendConnectAttrs appends the connection attributes as a length-encoded
+// block of length-encoded key and value strings.
+func appendConnectAttrs(dst []byte, attrs map[string]string) []byte {
+	var kv []byte
+	for key, val := range attrs {
+		kv = appendLenEncString(kv, key)
+		kv = appendLenEncString(kv, val)
+	}
+
+	dst = appendLenEncInt(dst, uint64(len(kv)))
+
+	return append(dst, kv...)
 }
