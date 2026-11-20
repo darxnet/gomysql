@@ -27,9 +27,24 @@ type Config struct {
 	TLS *tls.Config
 
 	// ServerPublicKey is the RSA key that encrypts the password for
-	// caching_sha2_password and sha256_password without TLS. If nil, it is
-	// requested from the server, which a man in the middle can replace.
+	// caching_sha2_password and sha256_password without TLS, when the
+	// server has no cached hash of it (after a restart or FLUSH
+	// PRIVILEGES) or always (sha256_password).
 	ServerPublicKey *rsa.PublicKey
+
+	// AllowPublicKeyRetrieval, without TLS and ServerPublicKey, asks the
+	// server for its RSA key. A man in the middle can send his own and
+	// read the password.
+	AllowPublicKeyRetrieval bool
+
+	// AllowCleartextPasswords sends the password in clear text without TLS
+	// or a unix socket when the server asks for mysql_clear_password, as
+	// PAM and LDAP authentication do.
+	AllowCleartextPasswords bool
+
+	// AuthPlugins are authentication methods besides the built-in ones,
+	// or replacing those of the same name.
+	AuthPlugins []AuthPlugin
 
 	// Collation of the session, such as "utf8mb4_0900_ai_ci", as SET NAMES
 	// sets it; "utf8mb4_general_ci" if empty. The handshake can set only

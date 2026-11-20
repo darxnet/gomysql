@@ -84,14 +84,10 @@ func (conn *Conn) handshakeV10(buf []byte) (authPluginName, authPluginData []byt
 	return authPluginName, authPluginData, nil
 }
 
-// handshakeResponse41 sends Protocol::HandshakeResponse41, after an
-// SSLRequest and the TLS handshake when Config.TLS is set.
-func (conn *Conn) handshakeResponse41(authPluginName, authPluginData []byte) error {
-	authResponse, err := conn.authResponse(authPluginName, authPluginData)
-	if err != nil {
-		return err
-	}
-
+// handshakeResponse41 sends Protocol::HandshakeResponse41 with the
+// response of the plugin, after an SSLRequest and the TLS handshake when
+// Config.TLS is set.
+func (conn *Conn) handshakeResponse41(authPluginName string, authResponse []byte) error {
 	capFlags, err := conn.clientCaps(len(authResponse))
 	if err != nil {
 		return err

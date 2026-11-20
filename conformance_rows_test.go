@@ -127,6 +127,7 @@ func TestConformanceLocation(t *testing.T) {
 		c, err := gomysql.Connect(gomysql.Config{
 			Network: "tcp", Address: os.Getenv("GOMYSQL_ADDR"), User: "b", Password: "b",
 			Database: "gomysql", Location: loc,
+			AllowPublicKeyRetrieval: true,
 		})
 		if err != nil {
 			t.Fatal(err)

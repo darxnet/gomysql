@@ -30,9 +30,7 @@ var tblSeq atomic.Uint32
 
 // knownBugs lists subtests that fail on known bugs, with the ROADMAP phase
 // that fixes them. A fix removes its entry, so the test then guards it.
-var knownBugs = map[string]string{
-	"TestConformanceAuth/c2": "phase 7: caching_sha2_password",
-}
+var knownBugs = map[string]string{}
 
 func knownBug(t *testing.T) {
 	t.Helper()
@@ -86,6 +84,7 @@ func confConn(t *testing.T, user, pass string) *gomysql.Conn {
 	c, err := gomysql.Connect(gomysql.Config{
 		Network: "tcp", Address: addr, User: user, Password: pass,
 		Database: "gomysql", Collation: "utf8mb4_bin",
+		AllowPublicKeyRetrieval: true,
 	})
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -110,6 +109,7 @@ func confSetup(t *testing.T) (c *gomysql.Conn, tbl string) {
 	t.Cleanup(func() {
 		if cc, err := gomysql.Connect(gomysql.Config{
 			Network: "tcp", Address: os.Getenv("GOMYSQL_ADDR"), User: "b", Password: "b", Database: "gomysql",
+			AllowPublicKeyRetrieval: true,
 		}); err == nil {
 			_, _ = cc.Exec("DROP TABLE IF EXISTS " + tbl)
 			_ = cc.Close()
@@ -858,7 +858,9 @@ func TestConformancePingClose(t *testing.T) {
 		t.Skip("GOMYSQL_ADDR not set")
 	}
 
-	c, err := gomysql.Connect(gomysql.Config{Network: "tcp", Address: addr, User: "b", Password: "b", Database: "gomysql"})
+	c, err := gomysql.Connect(gomysql.Config{
+		Network: "tcp", Address: addr, User: "b", Password: "b", Database: "gomysql", AllowPublicKeyRetrieval: true,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -882,6 +884,7 @@ func TestConformanceCollation(t *testing.T) {
 	for _, collation := range []string{"utf8mb4_unicode_ci", "latin1_bin"} {
 		c, err := gomysql.Connect(gomysql.Config{
 			Network: "tcp", Address: addr, User: "b", Password: "b", Collation: collation,
+			AllowPublicKeyRetrieval: true,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -896,31 +899,20 @@ func TestConformanceCollation(t *testing.T) {
 	}
 }
 
-// Auth plugins: caching_sha2_password is the MySQL 8 default.
-func TestConformanceAuth(t *testing.T) {
-	t.Parallel()
+// testTLSConfig accepts the self-signed certificates of test servers.
+func testTLSConfig() *tls.Config {
+	// MySQL 5.7 with OpenSSL 1.0.2 has no ECDHE, only the RSA key exchange,
+	// which Go leaves out of its default cipher suites since Go 1.22.
+	suites := make([]uint16, 0, len(tls.CipherSuites())+2)
+	suites = append(suites, tls.TLS_RSA_WITH_AES_128_GCM_SHA256, tls.TLS_RSA_WITH_AES_256_GCM_SHA384)
 
-	for _, u := range []string{"b", "c2"} {
-		t.Run(u, func(t *testing.T) {
-			t.Parallel()
-			knownBug(t)
+	for _, cs := range tls.CipherSuites() {
+		suites = append(suites, cs.ID)
+	}
 
-			defer func() {
-				if r := recover(); r != nil {
-					t.Errorf("PANIC: %v", r)
-				}
-			}()
-
-			if u == "c2" && !hasCachingSHA2(t) {
-				t.Skip("server has no caching_sha2_password")
-			}
-
-			c := confConn(t, u, u)
-			var v int
-			if err := c.QueryRow("SELECT 1").Scan(&v); err != nil {
-				t.Errorf("%v", err)
-			}
-		})
+	return &tls.Config{
+		InsecureSkipVerify: true, //nolint:gosec // self-signed test server
+		CipherSuites:       suites,
 	}
 }
 
@@ -941,18 +933,6 @@ func TestConformanceServerLimits(t *testing.T) {
 	}
 }
 
-// hasCachingSHA2 reports whether the server is MySQL or Percona 8.0+.
-func hasCachingSHA2(t *testing.T) bool {
-	t.Helper()
-
-	var version string
-	if err := confConn(t, "b", "b").QueryRow("SELECT VERSION()").Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-
-	return !strings.HasPrefix(version, "5.") && !strings.Contains(version, "MariaDB")
-}
-
 // Compressed protocol: small results (sent uncompressed below 50 bytes) and
 // results large enough to be compressed.
 func TestConformanceCompress(t *testing.T) {
@@ -970,6 +950,7 @@ func TestConformanceCompress(t *testing.T) {
 
 			c, err := gomysql.Connect(gomysql.Config{
 				Network: "tcp", Address: addr, User: "b", Password: "b", Database: "gomysql", Compress: true,
+				AllowPublicKeyRetrieval: true,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -1092,21 +1073,9 @@ func TestConformanceTLS(t *testing.T) {
 		t.Skipf("the server has no TLS (have_ssl=%s)", haveSSL)
 	}
 
-	// MySQL 5.7 with OpenSSL 1.0.2 has no ECDHE, only the RSA key exchange,
-	// which Go leaves out of its default cipher suites since Go 1.22.
-	suites := make([]uint16, 0, len(tls.CipherSuites())+2)
-	suites = append(suites, tls.TLS_RSA_WITH_AES_128_GCM_SHA256, tls.TLS_RSA_WITH_AES_256_GCM_SHA384)
-
-	for _, cs := range tls.CipherSuites() {
-		suites = append(suites, cs.ID)
-	}
-
 	c, err := gomysql.Connect(gomysql.Config{
 		Network: "tcp", Address: addr, User: "b", Password: "b", Database: "gomysql",
-		TLS: &tls.Config{
-			InsecureSkipVerify: true, //nolint:gosec // self-signed test server
-			CipherSuites:       suites,
-		},
+		TLS: testTLSConfig(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1195,6 +1164,7 @@ func confCompressConn(t *testing.T, need int) *gomysql.Conn {
 
 	c, err := gomysql.Connect(gomysql.Config{
 		Network: "tcp", Address: addr, User: "b", Password: "b", Database: "gomysql", Compress: true,
+		AllowPublicKeyRetrieval: true,
 	})
 	if err != nil {
 		t.Fatal(err)

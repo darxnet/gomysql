@@ -130,6 +130,7 @@ func TestDiff(t *testing.T) {
 					cc, err := gomysql.Connect(gomysql.Config{
 						Network: "tcp", Address: addr, User: "b", Password: "b",
 						Database: "gomysql", Collation: "utf8mb4_bin",
+						AllowPublicKeyRetrieval: true,
 					})
 					if err != nil {
 						t.Fatal(err)
