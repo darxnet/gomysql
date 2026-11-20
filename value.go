@@ -47,10 +47,12 @@ type dateTime struct {
 }
 
 // readBinary decodes a value of the binary protocol that is not NULL.
-// TIME values are formatted as text into scratch.
+// TIME values are formatted as text, appended to *text, so that they stay
+// valid as long as the row: sql.RawBytes of two TIME columns must not
+// share a buffer.
 //
 // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_binary_resultset.html
-func (v *value) readBinary(d *decoder, col *columnDefinition, scratch []byte) {
+func (v *value) readBinary(d *decoder, col *columnDefinition, text *[]byte) {
 	switch col.Type {
 	case myTypeTiny, myTypeShort, myTypeYear, myTypeInt24, myTypeLong, myTypeLongLong:
 		v.readBinaryInt(d, col)
@@ -61,7 +63,9 @@ func (v *value) readBinary(d *decoder, col *columnDefinition, scratch []byte) {
 	case myTypeDate, myTypeNewDate, myTypeDatetime, myTypeTimestamp, myTypeDatetime2, myTypeTimestamp2:
 		v.kind, v.t = kindTime, readBinaryDateTime(d)
 	case myTypeTime, myTypeTime2:
-		v.kind, v.b = kindBytes, appendBinaryTime(scratch, d, col.Decimals)
+		start := len(*text)
+		*text = appendBinaryTime(*text, d, col.Decimals)
+		v.kind, v.b = kindBytes, (*text)[start:len(*text):len(*text)]
 	default:
 		v.kind, v.b = kindBytes, d.lenEncString()
 	}

@@ -365,6 +365,18 @@ func FuzzScan(f *testing.F) {
 	})
 }
 
+// Two binary TIME values in sql.RawBytes: formatted into separate bytes.
+func TestScanTimesRawBytes(t *testing.T) {
+	t.Parallel()
+
+	rows := binaryRows(cell{col(myTypeTime, 0, 1), timeMinus26}, cell{col(myTypeTime, 0, 0), []byte{0}})
+
+	var a, b sql.RawBytes
+	if err := rows.Scan(&a, &b); err != nil || string(a) != "-26:03:04.5" || string(b) != "00:00:00" {
+		t.Errorf("%q, %q, %v", a, b, err)
+	}
+}
+
 func scanBenchRows(binaryProtocol bool) *Rows {
 	cols := make([]columnDefinition, len(replayColumns))
 	for i, c := range replayColumns {
