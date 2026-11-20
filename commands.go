@@ -24,15 +24,15 @@ func simpleCommand(conn *Conn, com byte, arg string) error {
 	case iERR:
 		return conn.processERRPacket(buf)
 	default:
-		return errUnexpectedPacketIdentity(buf[0])
+		return unexpectedPacket(buf[0])
 	}
 }
 
 const comInitDB byte = 0x02
 
-// UseDB makes schema the default database (COM_INIT_DB).
-func (conn *Conn) UseDB(schema string) error {
-	return simpleCommand(conn, comInitDB, schema)
+// UseDatabase makes name the default database (COM_INIT_DB).
+func (conn *Conn) UseDatabase(name string) error {
+	return simpleCommand(conn, comInitDB, name)
 }
 
 const comStatistics byte = 0x08

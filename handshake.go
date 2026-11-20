@@ -85,9 +85,9 @@ func (conn *Conn) handshakeV10(buf []byte) (authPluginName, authPluginData []byt
 }
 
 // handshakeResponse41 sends Protocol::HandshakeResponse41, after an
-// SSLRequest and the TLS handshake when Config.IsSSL is set.
+// SSLRequest and the TLS handshake when Config.TLS is set.
 func (conn *Conn) handshakeResponse41(authPluginName, authPluginData []byte) error {
-	authResponse, err := conn.getAuthResponse(authPluginName, authPluginData)
+	authResponse, err := conn.authResponse(authPluginName, authPluginData)
 	if err != nil {
 		return err
 	}
@@ -97,9 +97,9 @@ func (conn *Conn) handshakeResponse41(authPluginName, authPluginData []byte) err
 		return err
 	}
 
-	charset := conn.config.Charset
-	if charset == 0 {
-		charset = CharSet_utf8mb4_general_ci
+	collation, err := conn.config.collationID()
+	if err != nil {
+		return err
 	}
 
 	// capability flags, max packet size, character set, 23 reserved bytes;
@@ -107,7 +107,7 @@ func (conn *Conn) handshakeResponse41(authPluginName, authPluginData []byte) err
 	buf := make([]byte, 32, 128)
 	binary.LittleEndian.PutUint32(buf, capFlags)
 	binary.LittleEndian.PutUint32(buf[4:], maxPacketSize)
-	buf[8] = charset
+	buf[8] = collation
 
 	if capFlags&clientSSL != 0 {
 		if err := conn.upgradeTLS(buf); err != nil {
@@ -120,7 +120,7 @@ func (conn *Conn) handshakeResponse41(authPluginName, authPluginData []byte) err
 	buf = appendAuthResponse(buf, authResponse)
 
 	if capFlags&clientConnectWithDB != 0 {
-		buf = append(buf, conn.config.DbName...)
+		buf = append(buf, conn.config.Database...)
 		buf = append(buf, 0x00)
 	}
 
@@ -128,7 +128,7 @@ func (conn *Conn) handshakeResponse41(authPluginName, authPluginData []byte) err
 	buf = append(buf, 0x00)
 
 	if capFlags&clientConnectAttrs != 0 {
-		buf = appendConnectAttrs(buf, conn.config.Attr)
+		buf = appendConnectAttrs(buf, conn.config.ConnectAttrs)
 	}
 
 	conn.capFlags = capFlags
@@ -143,7 +143,7 @@ func (conn *Conn) clientCaps(authResponseLen int) (uint32, error) {
 	caps := clientProtocol41 | clientLongPassword | clientPluginAuth | clientSecureConn |
 		server&clientDeprecateEOF
 
-	if conn.config.IsCompress {
+	if conn.config.Compress {
 		if server&clientCompress == 0 {
 			return 0, errServerDontSupportCompression
 		}
@@ -151,7 +151,7 @@ func (conn *Conn) clientCaps(authResponseLen int) (uint32, error) {
 		caps |= clientCompress
 	}
 
-	if conn.config.IsSSL {
+	if conn.config.TLS != nil {
 		if server&clientSSL == 0 {
 			return 0, errServerDontSupportSSL
 		}
@@ -159,17 +159,17 @@ func (conn *Conn) clientCaps(authResponseLen int) (uint32, error) {
 		caps |= clientSSL
 	}
 
-	if conn.config.IsClientFoundRows {
+	if conn.config.FoundRows {
 		caps |= clientFoundRows
 	}
 
-	if conn.config.DbName != "" {
+	if conn.config.Database != "" {
 		caps |= clientConnectWithDB
 	}
 
 	// Servers without CLIENT_CONNECT_ATTRS, such as MySQL 5.5 and some
 	// proxies, would read the attributes as part of the next field.
-	if len(conn.config.Attr) > 0 {
+	if len(conn.config.ConnectAttrs) > 0 {
 		caps |= server & clientConnectAttrs
 	}
 
@@ -188,7 +188,7 @@ func (conn *Conn) upgradeTLS(sslRequest []byte) error {
 		return err
 	}
 
-	tlsConn := tls.Client(conn.conn, conn.getTlsConfig())
+	tlsConn := tls.Client(conn.conn, conn.config.tlsConfig())
 	if err := tlsConn.Handshake(); err != nil {
 		return err
 	}

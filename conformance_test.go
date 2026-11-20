@@ -37,7 +37,6 @@ var knownBugs = map[string]string{
 	"TestConformanceInterpolation/time-arg":             "phase 9: interpolation",
 	"TestConformanceSQLInjection/1_OR_1=1":              "phase 9: interpolation",
 	"TestConformanceSQLInjection/'_OR_'1'='1":           "phase 9: interpolation",
-	"TestConformanceTx/tx":                              "phase 9: Tx.Exec args",
 	"TestConformanceAuth/c2":                            "phase 7: caching_sha2_password",
 }
 
@@ -90,9 +89,9 @@ func confConn(t *testing.T, user, pass string) *gomysql.Conn {
 		t.Skip("GOMYSQL_ADDR not set")
 	}
 
-	c, err := gomysql.Open(gomysql.Config{
-		Protocol: "tcp", Address: addr, User: user, Password: pass,
-		DbName: "gomysql", Charset: gomysql.CharSet_utf8mb4_bin,
+	c, err := gomysql.Connect(gomysql.Config{
+		Network: "tcp", Address: addr, User: user, Password: pass,
+		Database: "gomysql", Collation: "utf8mb4_bin",
 	})
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -115,8 +114,8 @@ func confSetup(t *testing.T) (c *gomysql.Conn, tbl string) {
 	_, _ = c.Exec("DROP TABLE IF EXISTS " + tbl)
 
 	t.Cleanup(func() {
-		if cc, err := gomysql.Open(gomysql.Config{
-			Protocol: "tcp", Address: os.Getenv("GOMYSQL_ADDR"), User: "b", Password: "b", DbName: "gomysql",
+		if cc, err := gomysql.Connect(gomysql.Config{
+			Network: "tcp", Address: os.Getenv("GOMYSQL_ADDR"), User: "b", Password: "b", Database: "gomysql",
 		}); err == nil {
 			_, _ = cc.Exec("DROP TABLE IF EXISTS " + tbl)
 			_ = cc.Close()
@@ -865,7 +864,7 @@ func TestConformancePingClose(t *testing.T) {
 		t.Skip("GOMYSQL_ADDR not set")
 	}
 
-	c, err := gomysql.Open(gomysql.Config{Protocol: "tcp", Address: addr, User: "b", Password: "b", DbName: "gomysql"})
+	c, err := gomysql.Connect(gomysql.Config{Network: "tcp", Address: addr, User: "b", Password: "b", Database: "gomysql"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -874,6 +873,32 @@ func TestConformancePingClose(t *testing.T) {
 	}
 	if err := c.Close(); err != nil {
 		t.Errorf("Close on a healthy connection returns %v", err)
+	}
+}
+
+// Collation is set by the handshake.
+func TestConformanceCollation(t *testing.T) {
+	t.Parallel()
+
+	addr := os.Getenv("GOMYSQL_ADDR")
+	if addr == "" {
+		t.Skip("GOMYSQL_ADDR not set")
+	}
+
+	for _, collation := range []string{"utf8mb4_unicode_ci", "latin1_bin"} {
+		c, err := gomysql.Connect(gomysql.Config{
+			Network: "tcp", Address: addr, User: "b", Password: "b", Collation: collation,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var got string
+		if err := c.QueryRow("SELECT @@collation_connection").Scan(&got); err != nil || got != collation {
+			t.Errorf("collation_connection %q, %v; want %q", got, err, collation)
+		}
+
+		_ = c.Close()
 	}
 }
 
@@ -949,8 +974,8 @@ func TestConformanceCompress(t *testing.T) {
 				t.Skip("GOMYSQL_ADDR not set")
 			}
 
-			c, err := gomysql.Open(gomysql.Config{
-				Protocol: "tcp", Address: addr, User: "b", Password: "b", DbName: "gomysql", IsCompress: true,
+			c, err := gomysql.Connect(gomysql.Config{
+				Network: "tcp", Address: addr, User: "b", Password: "b", Database: "gomysql", Compress: true,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -1082,10 +1107,9 @@ func TestConformanceTLS(t *testing.T) {
 		suites = append(suites, cs.ID)
 	}
 
-	c, err := gomysql.Open(gomysql.Config{
-		Protocol: "tcp", Address: addr, User: "b", Password: "b", DbName: "gomysql",
-		IsSSL: true,
-		TlsConfig: &tls.Config{
+	c, err := gomysql.Connect(gomysql.Config{
+		Network: "tcp", Address: addr, User: "b", Password: "b", Database: "gomysql",
+		TLS: &tls.Config{
 			InsecureSkipVerify: true, //nolint:gosec // self-signed test server
 			CipherSuites:       suites,
 		},
@@ -1175,8 +1199,8 @@ func confCompressConn(t *testing.T, need int) *gomysql.Conn {
 		t.Skip("GOMYSQL_ADDR not set")
 	}
 
-	c, err := gomysql.Open(gomysql.Config{
-		Protocol: "tcp", Address: addr, User: "b", Password: "b", DbName: "gomysql", IsCompress: true,
+	c, err := gomysql.Connect(gomysql.Config{
+		Network: "tcp", Address: addr, User: "b", Password: "b", Database: "gomysql", Compress: true,
 	})
 	if err != nil {
 		t.Fatal(err)

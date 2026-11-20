@@ -18,7 +18,7 @@ func TestGetAuthResponse(t *testing.T) {
 	exp := []byte{53, 177, 140, 159, 251, 189, 127, 53, 109, 252,
 		172, 50, 211, 192, 240, 164, 26, 48, 207, 45}
 
-	res, err := client.getAuthResponse(authPluginName, authPluginData)
+	res, err := client.authResponse(authPluginName, authPluginData)
 	if err != nil {
 		t.Fatal(err)
 	}

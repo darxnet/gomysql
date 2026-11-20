@@ -11,10 +11,10 @@ import (
 	"errors"
 )
 
-// getAuthResponse computes the auth response of a plugin.
+// authResponse computes the auth response of a plugin.
 //
 //nolint:gocognit,gosec // G401: mysql_native_password is defined with SHA-1; replaced by plugins in ROADMAP phase 7
-func (conn *Conn) getAuthResponse(authPluginName, authPluginData []byte) (authResponse []byte, err error) {
+func (conn *Conn) authResponse(authPluginName, authPluginData []byte) (authResponse []byte, err error) {
 	switch string(authPluginName) {
 	case "mysql_old_password":
 		err = errOldPassword
@@ -55,7 +55,7 @@ func (conn *Conn) getAuthResponse(authPluginName, authPluginData []byte) (authRe
 			return authResponse, err
 		} else {
 			// https://dev.mysql.com/doc/internals/en/public-key-retrieval.html
-			if conn.config.ServerPubKey == nil {
+			if conn.config.ServerPublicKey == nil {
 				authResponse = []byte{0x01}
 				return authResponse, err
 			} else {
@@ -63,7 +63,7 @@ func (conn *Conn) getAuthResponse(authPluginName, authPluginData []byte) (authRe
 				for i := range pass {
 					pass[i] ^= authPluginData[i%len(authPluginData)]
 				}
-				authResponse, err = rsa.EncryptOAEP(sha256.New(), rand.Reader, conn.config.ServerPubKey, pass, nil)
+				authResponse, err = rsa.EncryptOAEP(sha256.New(), rand.Reader, conn.config.ServerPublicKey, pass, nil)
 				if err != nil {
 					return authResponse, err
 				}
@@ -99,7 +99,7 @@ func (conn *Conn) getAuthResponse(authPluginName, authPluginData []byte) (authRe
 
 	// https://dev.mysql.com/doc/dev/mysql-server/latest/page_caching_sha2_authentication_exchanges.html
 	case "caching_sha2_password_full":
-		if conn.config.ServerPubKey == nil {
+		if conn.config.ServerPublicKey == nil {
 			authResponse = []byte{0x02}
 			return authResponse, err
 		} else {
@@ -107,7 +107,7 @@ func (conn *Conn) getAuthResponse(authPluginName, authPluginData []byte) (authRe
 			for i := range pass {
 				pass[i] ^= authPluginData[i%len(authPluginData)]
 			}
-			authResponse, err = rsa.EncryptOAEP(sha256.New(), rand.Reader, conn.config.ServerPubKey, pass, nil)
+			authResponse, err = rsa.EncryptOAEP(sha256.New(), rand.Reader, conn.config.ServerPublicKey, pass, nil)
 			if err != nil {
 				return authResponse, err
 			}
@@ -136,7 +136,7 @@ func (conn *Conn) handshakeAuth(authPluginName, authPluginData []byte) (err erro
 			return err
 		}
 
-		if conn.config.IsCompress {
+		if conn.config.Compress {
 			err = conn.startCompression()
 		}
 		return err
@@ -187,7 +187,7 @@ func (conn *Conn) handshakeAuth(authPluginName, authPluginData []byte) (err erro
 				err = malformed("RSA key")
 				return err
 			} else {
-				conn.config.ServerPubKey = pubKey
+				conn.config.ServerPublicKey = pubKey
 			}
 		default:
 			authPluginData = buf[1:]
@@ -205,7 +205,7 @@ func (conn *Conn) handshakeAuth(authPluginName, authPluginData []byte) (err erro
 			// fast_auth_success
 			return conn.handshakeAuth(authPluginName, authPluginData)
 		default:
-			return errUnexpectedPacketIdentity(buf[0])
+			return unexpectedPacket(buf[0])
 		}
 
 	case 0x04:
@@ -215,17 +215,17 @@ func (conn *Conn) handshakeAuth(authPluginName, authPluginData []byte) (err erro
 			authPluginName = append(authPluginName, "_full"...)
 			return conn.handshakeAuth(authPluginName, authPluginData)
 		default:
-			return errUnexpectedPacketIdentity(buf[0])
+			return unexpectedPacket(buf[0])
 		}
 
 	default:
-		err = errUnexpectedPacketIdentity(buf[0])
+		err = unexpectedPacket(buf[0])
 		return err
 	}
 }
 
 func (conn *Conn) authSwitchResponse(authPluginName, authPluginData []byte) (err error) {
-	authResponse, err := conn.getAuthResponse(authPluginName, authPluginData)
+	authResponse, err := conn.authResponse(authPluginName, authPluginData)
 	if err != nil {
 		return err
 	}

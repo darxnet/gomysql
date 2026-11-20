@@ -13,16 +13,17 @@ const comQuery byte = 0x03
 
 // Query runs query, with args interpolated, in the text protocol and
 // returns its rows. A statement without a result set has no rows.
-func (conn *Conn) Query(query string, args ...any) (rows *Rows, err error) {
+func (conn *Conn) Query(query string, args ...any) (*Rows, error) {
 	if len(args) > 0 {
+		var err error
+
 		query, err = encodeQuery(query, args...)
 		if err != nil {
-			return rows, err
+			return nil, err
 		}
 	}
 
-	err = writeCommand(conn, comQuery, query)
-	if err != nil {
+	if err := writeCommand(conn, comQuery, query); err != nil {
 		return nil, err
 	}
 
@@ -32,7 +33,7 @@ func (conn *Conn) Query(query string, args ...any) (rows *Rows, err error) {
 	}
 
 	// A statement without a result set, such as DO 1, has no rows.
-	rows = &Rows{conn: conn, done: n == 0, columns: make([]ColumnDefinition, n)}
+	rows := &Rows{conn: conn, done: n == 0, columns: make([]columnDefinition, n)}
 
 	if err := conn.readColumns(rows.columns); err != nil {
 		return nil, err
@@ -51,17 +52,17 @@ func (conn *Conn) QueryRow(query string, args ...any) *Row {
 
 // Result is the outcome of Exec.
 type Result struct {
-	lastInsertId uint64
+	lastInsertID uint64
 	rowsAffected uint64
 }
 
 // LastInsertId returns the AUTO_INCREMENT value of the last inserted row.
 func (r *Result) LastInsertId() (int64, error) {
-	return int64(r.lastInsertId), nil //nolint:gosec // G115: database/sql's Result uses int64
+	return int64(r.lastInsertID), nil //nolint:gosec // G115: database/sql's Result uses int64
 }
 
 // RowsAffected returns the number of rows changed, or matched with
-// Config.IsClientFoundRows.
+// Config.FoundRows.
 func (r *Result) RowsAffected() (int64, error) {
 	return int64(r.rowsAffected), nil //nolint:gosec // G115: database/sql's Result uses int64
 }
@@ -93,7 +94,7 @@ func (conn *Conn) readResult() (*Result, error) {
 		return nil, err
 	}
 
-	result := &Result{lastInsertId: conn.lastInsertId, rowsAffected: conn.rowsAffected}
+	result := &Result{lastInsertID: conn.lastInsertID, rowsAffected: conn.rowsAffected}
 
 	if err := conn.skipResult(n); err != nil {
 		return nil, err

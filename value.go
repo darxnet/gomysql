@@ -49,7 +49,7 @@ type dateTime struct {
 // TIME values are formatted as text into scratch.
 //
 // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_binary_resultset.html
-func (v *value) readBinary(d *decoder, col *ColumnDefinition, scratch []byte) {
+func (v *value) readBinary(d *decoder, col *columnDefinition, scratch []byte) {
 	switch col.Type {
 	case myTypeTiny, myTypeShort, myTypeYear, myTypeInt24, myTypeLong, myTypeLongLong:
 		v.readBinaryInt(d, col)
@@ -92,7 +92,7 @@ func (v *value) setInt(u uint64, signed bool) {
 }
 
 // readBinaryInt reads an integer column.
-func (v *value) readBinaryInt(d *decoder, col *ColumnDefinition) {
+func (v *value) readBinaryInt(d *decoder, col *columnDefinition) {
 	n := intSize(col.Type)
 
 	b := d.take(n)
@@ -195,7 +195,7 @@ func appendBinaryTime(dst []byte, d *decoder, decimals byte) []byte {
 }
 
 // appendText formats a DATE, DATETIME or TIMESTAMP like the text protocol.
-func (t *dateTime) appendText(dst []byte, col *ColumnDefinition) []byte {
+func (t *dateTime) appendText(dst []byte, col *columnDefinition) []byte {
 	dst = append2(dst, uint8(t.year/100)) //nolint:gosec // G115: year < 10000
 	dst = append2(dst, uint8(t.year%100)) //nolint:gosec // G115: < 100
 	dst = append(dst, '-')
@@ -314,7 +314,7 @@ func appendFraction(dst []byte, micro uint32, decimals byte) []byte {
 }
 
 // isDateTime reports whether col holds DATE, DATETIME or TIMESTAMP values.
-func isDateTime(col *ColumnDefinition) bool {
+func isDateTime(col *columnDefinition) bool {
 	switch col.Type {
 	case myTypeDate, myTypeNewDate, myTypeDatetime, myTypeTimestamp, myTypeDatetime2, myTypeTimestamp2:
 		return true

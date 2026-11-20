@@ -24,9 +24,9 @@ func TestDiffParams(t *testing.T) {
 
 	ref := openRef(t, addr, "")
 
-	cc, err := gomysql.Open(gomysql.Config{
-		Protocol: "tcp", Address: addr, User: "b", Password: "b",
-		DbName: "gomysql", Charset: gomysql.CharSet_utf8mb4_bin,
+	cc, err := gomysql.Connect(gomysql.Config{
+		Network: "tcp", Address: addr, User: "b", Password: "b",
+		Database: "gomysql", Collation: "utf8mb4_bin",
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -40,7 +40,7 @@ const (
 )
 
 func openCC(b *testing.B) *gomysql.Conn {
-	c, err := gomysql.Open(gomysql.Config{Protocol: "tcp", Address: benchAddr(b), User: "b", Password: "b", DbName: "gomysql"})
+	c, err := gomysql.Connect(gomysql.Config{Network: "tcp", Address: benchAddr(b), User: "b", Password: "b", Database: "gomysql"})
 	if err != nil {
 		b.Fatal(err)
 	}

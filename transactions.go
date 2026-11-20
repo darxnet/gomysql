@@ -1,43 +1,50 @@
 package gomysql
 
+// Tx is a transaction: the commands of the connection between Begin and
+// Commit or Rollback.
 type Tx struct {
 	conn *Conn
 }
 
-func (conn *Conn) Begin() (tx *Tx, err error) {
-	_, err = conn.Exec("START TRANSACTION")
-	if err != nil {
-		return tx, err
+// Begin starts a transaction (START TRANSACTION).
+func (conn *Conn) Begin() (*Tx, error) {
+	if _, err := conn.Exec("START TRANSACTION"); err != nil {
+		return nil, err
 	}
 
-	tx = new(Tx)
-	tx.conn = conn
-
-	return tx, err
+	return &Tx{conn: conn}, nil
 }
 
-func (tx *Tx) Commit() (err error) {
-	_, err = tx.conn.Exec("COMMIT")
+// Commit commits the transaction.
+func (tx *Tx) Commit() error {
+	_, err := tx.conn.Exec("COMMIT")
+
 	return err
 }
 
-func (tx *Tx) Rollback() (err error) {
-	_, err = tx.conn.Exec("ROLLBACK")
+// Rollback rolls the transaction back.
+func (tx *Tx) Rollback() error {
+	_, err := tx.conn.Exec("ROLLBACK")
+
 	return err
 }
 
-func (tx *Tx) Exec(query string, args ...any) (result *Result, err error) {
-	return tx.conn.Exec(query, args)
+// Exec is Conn.Exec in the transaction.
+func (tx *Tx) Exec(query string, args ...any) (*Result, error) {
+	return tx.conn.Exec(query, args...)
 }
 
-func (tx *Tx) Prepare(query string) (stmt *Stmt, err error) {
+// Prepare is Conn.Prepare in the transaction.
+func (tx *Tx) Prepare(query string) (*Stmt, error) {
 	return tx.conn.Prepare(query)
 }
 
-func (tx *Tx) Query(query string, args ...any) (rows *Rows, err error) {
+// Query is Conn.Query in the transaction.
+func (tx *Tx) Query(query string, args ...any) (*Rows, error) {
 	return tx.conn.Query(query, args...)
 }
 
-func (tx *Tx) QueryRow(query string, args ...any) (row *Row) {
-	return tx.conn.QueryRow(query, args)
+// QueryRow is Conn.QueryRow in the transaction.
+func (tx *Tx) QueryRow(query string, args ...any) *Row {
+	return tx.conn.QueryRow(query, args...)
 }

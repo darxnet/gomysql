@@ -19,15 +19,15 @@ func TestLenDecInt(t *testing.T) {
 		1 << 24,
 	} {
 		encoded := appendLenEncInt(nil, want)
-		got, size := lenDecInt(encoded)
-		if got != want || size != len(encoded) {
-			t.Fatalf("lenDecInt(%x) = (%d, %d), want (%d, %d)", encoded, got, size, want, len(encoded))
+		d := decoder{buf: encoded}
+		if got := d.lenEncInt(); got != want || d.bad || len(d.buf) != 0 {
+			t.Fatalf("lenEncInt(%x) = %d, bad %v, %d bytes left; want %d", encoded, got, d.bad, len(d.buf), want)
 		}
 	}
 }
 
-// columnDefinition returns the definition of column id INT of table db.t.
-func columnDefinition() []byte {
+// columnDefinitionPacket returns the definition of column id INT of table db.t.
+func columnDefinitionPacket() []byte {
 	var dst []byte
 	for _, s := range []string{"def", "db", "t", "t", "id", "id"} {
 		dst = appendLenEncString(dst, s)
@@ -54,7 +54,7 @@ var parsers = map[string]func(buf []byte) error{
 		return err
 	},
 	"column definition": func(buf []byte) error {
-		return new(ColumnDefinition).parse(buf)
+		return new(columnDefinition).parse(buf)
 	},
 	"handshake": func(buf []byte) error {
 		_, _, err := (&Conn{}).handshakeV10(buf)
@@ -78,7 +78,7 @@ func TestParsersRejectTruncatedPackets(t *testing.T) {
 		"EOF":               {iEOF, 0x00, 0x00, 0x02, 0x00},
 		"EOF/deprecate":     {iEOF, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00},
 		"column count":      {0xfc, 0x00, 0x01},
-		"column definition": columnDefinition(),
+		"column definition": columnDefinitionPacket(),
 		"handshake":         handshakeV10(fakeCapabilities, "mysql_native_password"),
 		"ERR":               append([]byte{iERR, 0x15, 0x04, '#', '2', '8', '0', '0', '0'}, "denied"...),
 	}
@@ -111,7 +111,7 @@ func TestParsersRejectShortPackets(t *testing.T) {
 		"EOF":               {{iEOF}, {iEOF, 0, 0, 2}},
 		"EOF/deprecate":     {{iEOF, 0, 0, 2}, {iEOF, 0xfd, 0, 0, 0, 0, 2}},
 		"column count":      {{}, {0}, {0xfb}, {0xfc, 0}, {0xfe, 0, 0, 0, 0, 0, 0, 1, 0}},
-		"column definition": {{3, 'd', 'e'}, columnDefinition()[:25]},
+		"column definition": {{3, 'd', 'e'}, columnDefinitionPacket()[:25]},
 	}
 
 	for name, packets := range short {
@@ -144,9 +144,9 @@ func TestEOFStatusFlagsAfterLongCounts(t *testing.T) {
 func TestColumnDefinitionOwnsNames(t *testing.T) {
 	t.Parallel()
 
-	buf := columnDefinition()
+	buf := columnDefinitionPacket()
 
-	var column ColumnDefinition
+	var column columnDefinition
 	if err := column.parse(buf); err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestColumnDefinitionOwnsNames(t *testing.T) {
 		t.Fatalf("names changed with the read buffer: %q %q %q", column.Schema, column.Name, column.OrgName)
 	}
 
-	if column.Type != myTypeLong || column.Len != 11 || column.CharSet != 33 {
+	if column.Type != myTypeLong || column.Len != 11 || column.Collation != 33 {
 		t.Fatalf("fixed fields: %+v", column)
 	}
 
@@ -170,7 +170,7 @@ func TestColumnDefinitionOwnsNames(t *testing.T) {
 func FuzzParsers(f *testing.F) {
 	f.Add([]byte{iOK, 0, 0, 2, 0, 0, 0})
 	f.Add([]byte{iEOF, 0xfc, 0, 1, 0, 2, 0})
-	f.Add(columnDefinition())
+	f.Add(columnDefinitionPacket())
 	f.Add(handshakeV10(fakeCapabilities, "mysql_native_password"))
 
 	f.Fuzz(func(t *testing.T, buf []byte) {

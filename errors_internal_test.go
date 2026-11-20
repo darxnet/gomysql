@@ -55,7 +55,7 @@ func TestOutOfSync(t *testing.T) {
 		return c.ok()
 	})
 
-	conn, err := Open(srv.config())
+	conn, err := Connect(srv.config())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestUnsolicitedError(t *testing.T) {
 		return c.errPacket(4031, "HY000", "The client was disconnected by the server because of inactivity.")
 	})
 
-	conn, err := Open(srv.config())
+	conn, err := Connect(srv.config())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,8 +92,8 @@ func TestErrorMessages(t *testing.T) {
 	t.Parallel()
 
 	for err, want := range map[error]string{
-		errUnexpectedPacketIdentity(3):  "gomysql: bad connection: commands out of sync: unexpected packet type 0x03",
-		errPacketSequenceMismatch(1, 7): "gomysql: bad connection: commands out of sync: sequence id 7, expected 1",
+		unexpectedPacket(3): "gomysql: bad connection: commands out of sync: unexpected packet type 0x03",
+		badSequence(1, 7):   "gomysql: bad connection: commands out of sync: sequence id 7, expected 1",
 	} {
 		if err.Error() != want {
 			t.Errorf("%q, want %q", err, want)

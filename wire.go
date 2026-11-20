@@ -23,23 +23,6 @@ func appendLenEncInt(dst []byte, n uint64) []byte {
 	}
 }
 
-// lenDecInt reads Protocol::LengthEncodedInteger and returns it with the
-// number of bytes it took.
-func lenDecInt(b []byte) (n uint64, size int) {
-	le := binary.LittleEndian
-
-	switch b[0] {
-	case 0xfc:
-		return uint64(le.Uint16(b[1:3])), 3
-	case 0xfd:
-		return uint64(le.Uint16(b[1:3])) | uint64(b[3])<<16, 4
-	case 0xfe:
-		return le.Uint64(b[1:9]), 9 //nolint:gosec // G602: rows are bounds-checked by the row decoder of ROADMAP phase 6
-	}
-
-	return uint64(b[0]), 1
-}
-
 // isEOF reports whether buf ends rows or column definitions: an EOF packet,
 // or an OK packet with the EOF header under CLIENT_DEPRECATE_EOF. A text
 // row that starts with 0xfe (a string of 16 MB or more) is longer.
@@ -197,7 +180,7 @@ func (conn *Conn) processOKPacket(buf []byte) error {
 		return err
 	}
 
-	conn.rowsAffected, conn.lastInsertId, conn.statusFlags = rowsAffected, lastInsertID, statusFlags
+	conn.rowsAffected, conn.lastInsertID, conn.statusFlags = rowsAffected, lastInsertID, statusFlags
 
 	return nil
 }

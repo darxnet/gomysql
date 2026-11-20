@@ -4,9 +4,9 @@ import (
 	"bytes"
 )
 
-// ColumnDefinition describes a column of a result set or a parameter of
+// columnDefinition describes a column of a result set or a parameter of
 // a prepared statement (Protocol::ColumnDefinition41).
-type ColumnDefinition struct {
+type columnDefinition struct {
 	Catalog  []byte
 	Schema   []byte
 	Table    []byte
@@ -14,16 +14,16 @@ type ColumnDefinition struct {
 	Name     []byte
 	OrgName  []byte
 
-	CharSet  byte
-	Len      uint32 // [4]byte
-	Type     byte   // [1]byte
-	Flags    uint16 // [2]byte
-	Decimals byte   // [1]byte
+	Collation uint16 // collationBinary for binary strings
+	Len       uint32
+	Type      byte
+	Flags     uint16
+	Decimals  byte
 }
 
 // parse reads Protocol::ColumnDefinition41 from buf. The names are copied
 // into one new slice, since buf is reused by the next read.
-func (column *ColumnDefinition) parse(buf []byte) error {
+func (column *columnDefinition) parse(buf []byte) error {
 	d := decoder{buf: bytes.Clone(buf)}
 	column.Catalog = d.lenEncString()
 	column.Schema = d.lenEncString()
@@ -37,13 +37,10 @@ func (column *ColumnDefinition) parse(buf []byte) error {
 }
 
 // parseFixed reads the fixed-length fields that follow the names.
-func (column *ColumnDefinition) parseFixed(d *decoder) {
+func (column *columnDefinition) parseFixed(d *decoder) {
 	d.skip(1) // length of the fixed-length fields, always 0x0c
 
-	// The character set has 2 bytes; the low one is enough for the known
-	// ones.
-	column.CharSet = d.uint8()
-	d.skip(1)
+	column.Collation = d.uint16()
 
 	column.Len = d.uint32()
 	column.Type = d.uint8()
@@ -54,7 +51,7 @@ func (column *ColumnDefinition) parseFixed(d *decoder) {
 // update reads Protocol::ColumnDefinition41 from buf into a column read
 // before. Unless a name changed, only the fixed-length fields are set, so
 // the names are not copied again.
-func (column *ColumnDefinition) update(buf []byte) error {
+func (column *columnDefinition) update(buf []byte) error {
 	d := decoder{buf: buf}
 
 	same := bytes.Equal(d.lenEncString(), column.Catalog) &&
@@ -76,7 +73,7 @@ func (column *ColumnDefinition) update(buf []byte) error {
 // readColumns reads a column definition into each element of columns,
 // followed by an EOF packet unless CLIENT_DEPRECATE_EOF is on. An empty
 // columns reads nothing.
-func (conn *Conn) readColumns(columns []ColumnDefinition) error {
+func (conn *Conn) readColumns(columns []columnDefinition) error {
 	if len(columns) == 0 {
 		return nil
 	}
@@ -126,7 +123,7 @@ func (conn *Conn) readColumnsEOF() error {
 	}
 
 	if !isEOF(buf) {
-		return errUnexpectedPacketIdentity(buf[0])
+		return unexpectedPacket(buf[0])
 	}
 
 	return nil
@@ -161,7 +158,7 @@ func (conn *Conn) readUntilEOF() error {
 //
 // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_query_response.html
 func (conn *Conn) readResultHeader() (columns int, err error) {
-	conn.rowsAffected, conn.lastInsertId = 0, 0
+	conn.rowsAffected, conn.lastInsertID = 0, 0
 
 	buf, err := conn.readPacket()
 	if err != nil {

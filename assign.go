@@ -19,14 +19,14 @@ var (
 	errScanUnsupported = errors.New("unsupported destination type")
 )
 
-func scanError(i int, col *ColumnDefinition, dest any, err error) error {
+func scanError(i int, col *columnDefinition, dest any, err error) error {
 	return fmt.Errorf("gomysql: Scan error on column index %d, name %q, into %T: %w", i, col.Name, dest, err)
 }
 
 // assign stores v into dest with the conversions of database/sql.
 //
 //nolint:gocyclo,cyclop // one case per destination type
-func assign(dest any, v *value, col *ColumnDefinition) error {
+func assign(dest any, v *value, col *columnDefinition) error {
 	switch d := dest.(type) {
 	case *string:
 		switch v.kind {
@@ -105,7 +105,7 @@ func assign(dest any, v *value, col *ColumnDefinition) error {
 
 // assignReflect handles pointers to pointers and to types based on the
 // basic ones, such as type ID int64.
-func assignReflect(dest any, v *value, col *ColumnDefinition) error {
+func assignReflect(dest any, v *value, col *columnDefinition) error {
 	rv := reflect.ValueOf(dest)
 	if rv.Kind() != reflect.Pointer || rv.IsNil() {
 		return errScanUnsupported
@@ -333,7 +333,7 @@ func (v *value) float(bits int) (float64, error) {
 	return f, nil
 }
 
-func (v *value) time(col *ColumnDefinition) (time.Time, error) {
+func (v *value) time(col *columnDefinition) (time.Time, error) {
 	switch v.kind {
 	case kindTime:
 		return v.t.time(), nil
@@ -351,7 +351,7 @@ func (v *value) time(col *ColumnDefinition) (time.Time, error) {
 }
 
 // bytes returns a copy of v as text; nil for NULL.
-func (v *value) bytes(col *ColumnDefinition) []byte {
+func (v *value) bytes(col *columnDefinition) []byte {
 	switch v.kind {
 	case kindNull:
 		return nil
@@ -363,7 +363,7 @@ func (v *value) bytes(col *ColumnDefinition) []byte {
 }
 
 // appendText formats v like the text protocol would send it.
-func (v *value) appendText(dst []byte, col *ColumnDefinition) []byte {
+func (v *value) appendText(dst []byte, col *columnDefinition) []byte {
 	switch v.kind {
 	case kindBytes:
 		return append(dst, v.b...)
@@ -390,7 +390,7 @@ func (v *value) appendText(dst []byte, col *ColumnDefinition) []byte {
 // float64, []byte, or time.Time for DATE, DATETIME and TIMESTAMP. In the
 // binary protocol unsigned integers above MaxInt64 are []byte; in the text
 // one BIGINT UNSIGNED is uint64.
-func (v *value) driverValue(col *ColumnDefinition) any {
+func (v *value) driverValue(col *columnDefinition) any {
 	switch v.kind {
 	case kindInt:
 		return int64(v.i) //nolint:gosec // G115: int64 bits
@@ -418,7 +418,7 @@ func (v *value) driverValue(col *ColumnDefinition) any {
 // textDriverValue converts a text value as go-sql-driver does: integer
 // columns to int64, BIGINT UNSIGNED to uint64, FLOAT to float32, DOUBLE to
 // float64, dates to time.Time, the rest to a copy of the bytes.
-func textDriverValue(b []byte, col *ColumnDefinition) any {
+func textDriverValue(b []byte, col *columnDefinition) any {
 	switch col.Type {
 	case myTypeLongLong:
 		if col.Flags&flagUnsigned != 0 {

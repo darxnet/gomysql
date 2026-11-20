@@ -18,12 +18,12 @@ and is not stable until v1.
 ## Usage
 
 ```go
-conn, err := gomysql.Open(gomysql.Config{
-	Protocol: "tcp",
+conn, err := gomysql.Connect(gomysql.Config{
+	Network:  "tcp",
 	Address:  "127.0.0.1:3306",
 	User:     "user",
 	Password: "password",
-	DbName:   "db",
+	Database: "db",
 })
 if err != nil {
 	return err

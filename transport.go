@@ -172,7 +172,7 @@ func (conn *Conn) readPacket() ([]byte, error) {
 // is returned as *Error rather than as a sequence mismatch. Either way the
 // connection is unusable.
 func (conn *Conn) sequenceMismatch(received byte, payloadLen int) error {
-	errSeq := errPacketSequenceMismatch(conn.sequence, received)
+	errSeq := badSequence(conn.sequence, received)
 
 	if payloadLen == 0 || payloadLen >= maxPayloadSize {
 		return errSeq

@@ -20,12 +20,12 @@ type (
 // cell is one column of a test row: its definition and its encoding, nil
 // for NULL.
 type cell struct {
-	col ColumnDefinition
+	col columnDefinition
 	enc []byte
 }
 
-func col(colType byte, flags uint16, decimals byte) ColumnDefinition {
-	return ColumnDefinition{Name: []byte("c"), Type: colType, Flags: flags, Decimals: decimals}
+func col(colType byte, flags uint16, decimals byte) columnDefinition {
+	return columnDefinition{Name: []byte("c"), Type: colType, Flags: flags, Decimals: decimals}
 }
 
 func le16(v uint16) []byte { return binary.LittleEndian.AppendUint16(nil, v) }
@@ -56,7 +56,7 @@ func binaryRows(cells ...cell) *Rows {
 }
 
 // textRows returns Rows positioned on a text row; a nil value is NULL.
-func textRows(c *ColumnDefinition, values ...[]byte) *Rows {
+func textRows(c *columnDefinition, values ...[]byte) *Rows {
 	rows := &Rows{}
 
 	for _, v := range values {
@@ -289,7 +289,7 @@ func FuzzScan(f *testing.F) {
 	f.Add([]byte{0, 0, 1, 0, 0, 0, 3, 'a', 'b', 'c'}, true)
 	f.Add([]byte{1, '1', 0xfb, 0xfc, 1, 0, 'x'}, false)
 
-	columns := []ColumnDefinition{
+	columns := []columnDefinition{
 		col(myTypeLong, 0, 0), col(myTypeVarString, 0, 0), col(myTypeDatetime, 0, 6), col(myTypeTime, 0, 3),
 	}
 
@@ -313,7 +313,7 @@ func FuzzScan(f *testing.F) {
 }
 
 func scanBenchRows(binaryProtocol bool) *Rows {
-	cols := make([]ColumnDefinition, len(replayColumns))
+	cols := make([]columnDefinition, len(replayColumns))
 	for i, c := range replayColumns {
 		if err := cols[i].parse(c.definition()); err != nil {
 			panic(err)
