@@ -608,3 +608,41 @@ func TestTxMethods(t *testing.T) {
 		t.Error("snapshot: no error")
 	}
 }
+
+// A reset whose SET NAMES or init commands fail leaves a session that is
+// not the configured one: the connection is broken.
+func TestResetConnectionFails(t *testing.T) {
+	t.Parallel()
+
+	for _, failing := range []string{"SET NAMES", "SET a"} {
+		resets := 0
+
+		cfg := newFakeServer(t, true, func(c *fakeConn, cmd byte, payload []byte) error {
+			if cmd == comResetConnection {
+				resets++
+			}
+
+			if resets > 0 && strings.HasPrefix(string(payload), failing) {
+				return c.errPacket(1064, "42000", "syntax")
+			}
+
+			return c.ok()
+		}).config()
+		cfg.InitCommands = []string{"SET a"}
+
+		conn, err := Connect(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if e := conn.ResetConnection(); !errors.Is(e, &Error{Number: 1064}) {
+			t.Errorf("%s fails: %v", failing, e)
+		}
+
+		if e := conn.Ping(); !errors.Is(e, ErrBadConn) {
+			t.Errorf("%s fails, then Ping: %v", failing, e)
+		}
+
+		_ = conn.Close()
+	}
+}
