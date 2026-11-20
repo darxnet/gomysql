@@ -105,6 +105,8 @@ const (
 	myTypeDatetime2  byte = 0x12
 	myTypeTime2      byte = 0x13
 
+	myTypeVector     byte = 0xf2 // MySQL 9
+	myTypeJSON       byte = 0xf5
 	myTypeNewDecimal byte = 0xf6
 	myTypeEnum       byte = 0xf7
 	myTypeSet        byte = 0xf8

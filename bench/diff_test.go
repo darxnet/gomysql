@@ -2,10 +2,12 @@ package bench
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -42,15 +44,17 @@ var diffCases = []diffCase{
 	{"FLOAT", []any{0.0, -1.5, float32(3.25)}, []func() any{ints[float32](), ints[float64]()}},
 	{"DECIMAL(20,6)", []any{"0.000000", "-12345678901234.123456"}, []func() any{ints[string]()}},
 	{"VARCHAR(255)", []any{"", "abc", "ünï©ødé 😀", strings.Repeat("x", 255)}, []func() any{ints[string](), ints[[]byte]()}},
-	{"TEXT", []any{"", strings.Repeat("y", 70000/2)}, []func() any{ints[string](), ints[[]byte]()}},
-	{"VARBINARY(16)", []any{[]byte{}, []byte{0, 1, 0xff}}, []func() any{ints[[]byte](), ints[string]()}},
+	{"TEXT", []any{"", strings.Repeat("y", 70000/2)}, []func() any{ints[string](), ints[[]byte](), ints[any]()}},
+	{"VARBINARY(16)", []any{[]byte{}, []byte{0, 1, 0xff}}, []func() any{ints[[]byte](), ints[string](), ints[any]()}},
 	{"BLOB", []any{[]byte{0, 0xfe, 'a'}}, []func() any{ints[[]byte]()}},
 	{"DATE", []any{"2026-11-18", "1000-01-01"}, []func() any{ints[time.Time](), ints[string]()}},
 	{"DATETIME", []any{"2026-11-18 13:31:33", "1000-01-01 00:00:00"}, []func() any{ints[time.Time](), ints[string]()}},
 	{"DATETIME(6)", []any{"2026-11-18 13:31:33.123456"}, []func() any{ints[time.Time](), ints[string]()}},
 	{"TIMESTAMP", []any{"2026-11-18 13:31:33"}, []func() any{ints[time.Time](), ints[string]()}},
 	{"BIT(8)", []any{[]byte{0x5a}}, []func() any{ints[[]byte]()}},
-	{"ENUM('a','b')", []any{"a", "b"}, []func() any{ints[string]()}},
+	{"ENUM('a','b')", []any{"a", "b"}, []func() any{ints[string](), ints[any]()}},
+	{"JSON", []any{`{"a": 1}`}, []func() any{ints[string](), ints[any]()}},
+	{"BIT(8) ", []any{[]byte{0x5a}}, []func() any{ints[any](), ints[sql.RawBytes]()}},
 	{"INT NULL", []any{nil, 7}, []func() any{ints[sql.NullInt64](), ints[*int64](), ints[any](), ints[[]byte]()}},
 	{"VARCHAR(8) NULL", []any{nil, "x"}, []func() any{ints[sql.NullString](), ints[*string](), ints[sql.RawBytes]()}},
 	{"DATETIME NULL", []any{nil, "2026-11-18 13:31:33"}, []func() any{ints[sql.NullTime](), ints[*time.Time]()}},
@@ -92,6 +96,14 @@ func TestDiff(t *testing.T) {
 	std := openRef(t, addr, "")
 	stdTime := openRef(t, addr, "&parseTime=true&loc=UTC")
 
+	// MariaDB has no JSON type: its JSON columns are LONGTEXT.
+	var version string
+	if err := std.QueryRow("SELECT VERSION()").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+
+	jsonType := !strings.Contains(version, "MariaDB")
+
 	for _, c := range diffCases {
 		mustStd(t, std, "DROP TABLE IF EXISTS diff")
 		mustStd(t, std, "CREATE TABLE diff (id INT AUTO_INCREMENT PRIMARY KEY, v "+c.typ+") DEFAULT CHARSET=utf8mb4")
@@ -128,6 +140,7 @@ func TestDiff(t *testing.T) {
 					if (err != nil) != (wantErr != nil) {
 						t.Fatalf("gomysql: %v (want %s, %v)", err, show(want), wantErr)
 					}
+					want := intended(c.typ, newDest(), proto, jsonType, want)
 					if err == nil && !reflect.DeepEqual(got, want) {
 						t.Errorf("\n got %s\nwant %s", show(got), show(want))
 					}
@@ -135,6 +148,63 @@ func TestDiff(t *testing.T) {
 			}
 		}
 	}
+}
+
+// intended changes the reference values where gomysql differs on purpose:
+// an any gets uint64 for BIGINT UNSIGNED in both protocols and for BIT,
+// json.RawMessage for JSON (MySQL only: MariaDB sends it as LONGTEXT), and
+// a string for other text.
+func intended(typ string, dest any, proto string, jsonType bool, want []any) []any {
+	if _, ok := dest.(*any); !ok {
+		return want
+	}
+
+	out := make([]any, len(want))
+	copy(out, want)
+
+	for i, v := range out {
+		switch {
+		case strings.HasPrefix(typ, "BIGINT UNSIGNED") && proto == "binary":
+			switch n := v.(type) {
+			case int64:
+				out[i] = uint64(n)
+			case []byte:
+				u, err := strconv.ParseUint(string(n), 10, 64)
+				if err == nil {
+					out[i] = u
+				}
+			}
+		case strings.HasPrefix(typ, "BIT"):
+			if b, ok := v.([]byte); ok {
+				var u uint64
+				for _, c := range b {
+					u = u<<8 | uint64(c)
+				}
+
+				out[i] = u
+			}
+		case typ == "JSON" && jsonType:
+			if b, ok := v.([]byte); ok {
+				out[i] = json.RawMessage(b)
+			}
+		case isTextType(typ):
+			if b, ok := v.([]byte); ok {
+				out[i] = string(b)
+			}
+		}
+	}
+
+	return out
+}
+
+func isTextType(typ string) bool {
+	for _, p := range []string{"VARCHAR", "CHAR", "TEXT", "ENUM", "SET", "JSON"} {
+		if strings.HasPrefix(typ, p) {
+			return true
+		}
+	}
+
+	return false
 }
 
 const diffQuery = "SELECT v FROM diff ORDER BY id"

@@ -17,7 +17,7 @@ func (conn *Conn) Query(query string, args ...any) (*Rows, error) {
 	if len(args) > 0 {
 		var err error
 
-		query, err = encodeQuery(query, args...)
+		query, err = encodeQuery(conn.config.Location, query, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -33,7 +33,7 @@ func (conn *Conn) Query(query string, args ...any) (*Rows, error) {
 	}
 
 	// A statement without a result set, such as DO 1, has no rows.
-	rows := &Rows{conn: conn, done: n == 0, columns: make([]columnDefinition, n)}
+	rows := &Rows{conn: conn, done: n == 0, columns: make([]columnDefinition, n), loc: conn.config.Location}
 
 	if err := conn.readColumns(rows.columns); err != nil {
 		return nil, err
@@ -73,7 +73,7 @@ func (conn *Conn) Exec(query string, args ...any) (*Result, error) {
 	if len(args) > 0 {
 		var err error
 
-		query, err = encodeQuery(query, args...)
+		query, err = encodeQuery(conn.config.Location, query, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -103,7 +103,7 @@ func (conn *Conn) readResult() (*Result, error) {
 	return result, nil
 }
 
-func encodeQuery(query string, args ...any) (s string, err error) {
+func encodeQuery(loc *time.Location, query string, args ...any) (s string, err error) {
 	if strings.Count(query, "?") != len(args) {
 		return "", errors.New("wrong args count")
 	}
@@ -121,7 +121,7 @@ func encodeQuery(query string, args ...any) (s string, err error) {
 			s = strings.Replace(s, "?", quoteString(encodeQueryString(string(a))), 1)
 			continue
 		case time.Time:
-			s = strings.Replace(s, "?", quoteString(a.Format(timeFormat)), 1)
+			s = strings.Replace(s, "?", quoteString(inLocation(a, loc).Format(timeFormat)), 1)
 			continue
 		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 			s = strings.Replace(s, "?", fmt.Sprintf("%d", a), 1)
