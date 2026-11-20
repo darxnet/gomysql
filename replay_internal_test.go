@@ -188,3 +188,85 @@ func BenchmarkReplayInts(b *testing.B) {
 }
 
 const fakeUnsigned uint16 = 0x20 // UNSIGNED_FLAG
+
+// BenchmarkReplayStructs reads 100000 rows into a reused slice of structs:
+// by hand with Scan, with ScanStruct, and with AppendStructs.
+func BenchmarkReplayStructs(b *testing.B) {
+	type row struct {
+		AudienceID uint32
+		UserID     uint64
+		KeepDays   uint16
+	}
+
+	conn, err := Connect(newReplayServer(b, true).config())
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	stmt, err := conn.Prepare("100000")
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	read := map[string]func(dst []row) ([]row, error){
+		"Scan": func(dst []row) ([]row, error) {
+			rows, qerr := stmt.Query()
+			if qerr != nil {
+				return dst, qerr
+			}
+
+			var r row
+			for rows.Next() {
+				if serr := rows.Scan(&r.AudienceID, &r.UserID, &r.KeepDays); serr != nil {
+					return dst, serr
+				}
+
+				dst = append(dst, r)
+			}
+
+			return dst, rows.Close()
+		},
+		"ScanStruct": func(dst []row) ([]row, error) {
+			rows, qerr := stmt.Query()
+			if qerr != nil {
+				return dst, qerr
+			}
+
+			var r row
+			for rows.Next() {
+				if serr := rows.ScanStruct(&r); serr != nil {
+					return dst, serr
+				}
+
+				dst = append(dst, r)
+			}
+
+			return dst, rows.Close()
+		},
+		"AppendStructs": func(dst []row) ([]row, error) {
+			return AppendStructs(dst)(stmt.Query())
+		},
+	}
+
+	for _, name := range []string{"Scan", "ScanStruct", "AppendStructs"} {
+		b.Run(name, func(b *testing.B) {
+			var (
+				dst []row
+				n   int
+			)
+
+			b.ReportAllocs()
+
+			for b.Loop() {
+				if dst, err = read[name](dst[:0]); err != nil {
+					b.Fatal(err)
+				}
+
+				n += len(dst)
+			}
+
+			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(n), "ns/row")
+		})
+	}
+}
