@@ -1,6 +1,7 @@
 package gomysql
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -471,5 +472,139 @@ func TestSessionCommands(t *testing.T) {
 	cfg.InitCommands = []string{"err"}
 	if _, e := Connect(cfg); e == nil || !strings.Contains(e.Error(), `init command "err"`) {
 		t.Errorf("failing init command: %v", e)
+	}
+}
+
+func TestChangeUser(t *testing.T) {
+	t.Parallel()
+
+	var packets [][]byte
+
+	cfg := newFakeServer(t, true, func(c *fakeConn, cmd byte, payload []byte) error {
+		if cmd == comChangeUser {
+			packets = append(packets, bytes.Clone(payload))
+
+			if bytes.HasPrefix(payload, []byte("bad\x00")) {
+				return c.errPacket(1045, "28000", "Access denied")
+			}
+		}
+
+		return c.ok()
+	}).config()
+	cfg.InitCommands = []string{"SET a"}
+
+	conn, err := Connect(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if e := conn.ChangeUser("other", "pw", "db2"); e != nil {
+		t.Fatal(e)
+	}
+
+	// user NUL, a 20-byte scramble, database NUL, collation (2), plugin NUL
+	p := packets[0]
+	if !bytes.HasPrefix(p, []byte("other\x00\x14")) ||
+		!bytes.Contains(p, []byte("db2\x00\x2d\x00mysql_native_password\x00")) {
+		t.Errorf("COM_CHANGE_USER %q", p)
+	}
+
+	if conn.config.User != "other" || conn.config.Database != "db2" {
+		t.Errorf("config %s %s", conn.config.User, conn.config.Database)
+	}
+
+	if e := conn.ChangeUser("bad", "pw", ""); !errors.Is(e, &Error{Number: 1045}) {
+		t.Errorf("refused: %v", e)
+	}
+
+	if e := conn.Ping(); !errors.Is(e, ErrBadConn) {
+		t.Errorf("Ping after a refused ChangeUser: %v", e)
+	}
+
+	if conn.config.User != "other" {
+		t.Errorf("config after a refusal: %s", conn.config.User)
+	}
+}
+
+func TestIsolationLevel(t *testing.T) {
+	t.Parallel()
+
+	for level, want := range map[sql.IsolationLevel]string{
+		sql.LevelReadUncommitted: "READ UNCOMMITTED",
+		sql.LevelReadCommitted:   "READ COMMITTED",
+		sql.LevelRepeatableRead:  "REPEATABLE READ",
+		sql.LevelSerializable:    "SERIALIZABLE",
+		sql.LevelSnapshot:        "",
+		sql.LevelLinearizable:    "",
+	} {
+		if got, err := isolationLevel(level); got != want || (err != nil) != (want == "") {
+			t.Errorf("%v: %q, %v", level, got, err)
+		}
+	}
+}
+
+func TestTxMethods(t *testing.T) {
+	t.Parallel()
+
+	var sent []string
+
+	conn, err := Connect(newFakeServer(t, true, func(c *fakeConn, cmd byte, payload []byte) error {
+		sent = append(sent, string(payload))
+
+		if cmd == comStmtPrepare {
+			return c.prepareOK(1, nil)
+		}
+
+		if cmd == comQuery && string(payload) == "rows" {
+			c.seq = 1
+			out := c.eof(c.resultSet(nil, colString, []byte{1, '1'}), true)
+			_, err := c.conn.Write(out)
+
+			return err
+		}
+
+		return c.ok()
+	}).config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	ctx := context.Background()
+
+	tx, err := conn.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted, ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, e := tx.ExecContext(ctx, "x"); e != nil {
+		t.Error(e)
+	}
+
+	var s string
+	if e := tx.QueryRowContext(ctx, "rows").Scan(&s); e != nil || s != "1" {
+		t.Errorf("QueryRowContext: %q, %v", s, e)
+	}
+
+	rows, err := tx.QueryContext(ctx, "rows")
+	if err != nil || rows.Close() != nil {
+		t.Errorf("QueryContext: %v", err)
+	}
+
+	if _, e := tx.PrepareContext(ctx, "p"); e != nil {
+		t.Error(e)
+	}
+
+	if e := tx.Commit(); e != nil {
+		t.Error(e)
+	}
+
+	if sent[0] != "SET TRANSACTION ISOLATION LEVEL READ COMMITTED" || sent[1] != "START TRANSACTION READ ONLY" {
+		t.Errorf("sent %q", sent)
+	}
+
+	if _, e := conn.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSnapshot}); e == nil {
+		t.Error("snapshot: no error")
 	}
 }
