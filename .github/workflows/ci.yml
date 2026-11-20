@@ -112,6 +112,7 @@ jobs:
           - mysql:8.0
           - mysql:8.4
           - percona/percona-server:8.4
+          - mysql:9
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -136,15 +137,14 @@ jobs:
           GOMYSQL_ADDR: 127.0.0.1:3306
         run: go test -count=1 -run Diff ./...
 
-  # Not required by "CI passed": MySQL 9 needs caching_sha2_password
-  # (ROADMAP phase 7); MariaDB is supported on a best-effort basis.
+  # Not required by "CI passed": MariaDB is supported on a best-effort
+  # basis.
   integration-experimental:
     name: Integration, non-blocking (${{ matrix.image }})
     strategy:
       fail-fast: false
       matrix:
         image:
-          - mysql:9
           - mariadb:10.6
           - mariadb:11.4
     runs-on: ubuntu-latest
