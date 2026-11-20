@@ -68,11 +68,7 @@ func (conn *Conn) connect() error {
 		return err
 	}
 
-	if err := conn.handshakeResponse41(authPluginName, authPluginData); err != nil {
-		return err
-	}
-
-	return conn.handshakeAuth(authPluginName, authPluginData)
+	return conn.authenticate(string(authPluginName), authPluginData)
 }
 
 // Connect connects and authenticates. On failure it returns a nil Conn and
