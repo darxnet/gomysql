@@ -15,6 +15,7 @@ type Stmt struct {
 	query   string
 	columns []columnDefinition
 	params  []columnDefinition
+	names   []string // of the :name placeholders
 	id      uint32
 }
 
@@ -24,11 +25,19 @@ func (stmt *Stmt) Close() error {
 
 const comStmtPrepare = 0x16
 
-// Prepare prepares query on the server (COM_STMT_PREPARE).
+// Prepare prepares query on the server (COM_STMT_PREPARE). Its
+// placeholders are ? or :name, not both; a :name placeholder takes its
+// argument by name, as in Conn.Query.
 //
 // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_stmt_prepare.html
 func (conn *Conn) Prepare(query string) (*Stmt, error) {
-	if err := writeCommand(conn, comStmtPrepare, query); err != nil {
+	sent, names, err := rewriteNamed(query, conn.statusFlags&serverStatusNoBackslashEscapes == 0)
+	if err != nil {
+		return nil, err
+	}
+
+	err = writeCommand(conn, comStmtPrepare, sent)
+	if err != nil {
 		return nil, err
 	}
 
@@ -60,6 +69,7 @@ func (conn *Conn) Prepare(query string) (*Stmt, error) {
 	stmt := &Stmt{
 		conn:    conn,
 		query:   query,
+		names:   names,
 		id:      id,
 		columns: make([]columnDefinition, columns),
 		params:  make([]columnDefinition, params),
@@ -119,6 +129,11 @@ func (stmt *Stmt) Exec(args ...any) (*Result, error) {
 
 // execute sends COM_STMT_EXECUTE.
 func (stmt *Stmt) execute(args []any) error {
+	args, err := stmt.bind(args)
+	if err != nil {
+		return err
+	}
+
 	if len(stmt.params) != len(args) {
 		return errArgCount(len(stmt.params), len(args))
 	}
@@ -141,6 +156,10 @@ func (stmt *Stmt) execute(args []any) error {
 		var values []byte
 
 		for i, arg := range args {
+			if _, ok := expandable(arg); ok {
+				return fmt.Errorf("argument %d: %w", i, errSliceInStmt)
+			}
+
 			v, err := convertArg(arg)
 			if err != nil {
 				return fmt.Errorf("argument %d: %w", i, err)
@@ -161,6 +180,32 @@ func (stmt *Stmt) execute(args []any) error {
 	}
 
 	return writeCommand(stmt.conn, comStmtExecute, buf)
+}
+
+// bind returns the arguments of the placeholders in order.
+func (stmt *Stmt) bind(args []any) ([]any, error) {
+	var b binder
+	if err := b.init(args); err != nil {
+		return nil, err
+	}
+
+	if stmt.names == nil {
+		if b.isNamed() {
+			return nil, errNeedPositional
+		}
+
+		return args, nil
+	}
+
+	bound := make([]any, len(stmt.names))
+	for i, name := range stmt.names {
+		var err error
+		if bound[i], err = b.named(name); err != nil {
+			return nil, err
+		}
+	}
+
+	return bound, b.done(stmt.query, true)
 }
 
 // readColumns reads the column definitions of an EXECUTE result into

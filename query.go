@@ -5,15 +5,23 @@ const comQuery byte = 0x03
 // Query runs query in the text protocol and returns its rows. A statement
 // without a result set has no rows.
 //
-// The placeholders ? of query are replaced by args as SQL literals, on the
-// client: a ? in a string, a quoted identifier or a comment is not a
-// placeholder, as for the server in a prepared statement. Arguments are
-// converted as in database/sql: a driver.Valuer gives its value, a
-// pointer what it points to (nil is NULL), a type based on a basic type
-// that type; time.Time is written in Config.Location. Strings are escaped
-// for NO_BACKSLASH_ESCAPES when the server reports it; collations whose
-// multibyte characters can contain a backslash (big5, cp932, gbk, gb18030,
-// sjis) cannot have string arguments: use Prepare.
+// The placeholders of query are replaced by args as SQL literals, on the
+// client. They are ? for positional arguments or :name for named ones,
+// not both: sql.Named arguments, or one struct (fields by the db tag, or
+// else their name ignoring case; db:"-" skips one) or map with string
+// keys. A placeholder in a string, a quoted identifier or a comment is not
+// one, as for the server in a prepared statement, nor is a colon after an
+// identifier or a colon (lbl:LOOP, @a:=1). A query without args is sent
+// as it is.
+//
+// Arguments are converted as in database/sql: a driver.Valuer gives its
+// value, a pointer what it points to (nil is NULL), a type based on a
+// basic type that type; time.Time is written in Config.Location. A slice
+// other than []byte becomes a list: IN (?) with []int{1, 2} is IN (1, 2);
+// an empty one is an error. Strings are escaped for NO_BACKSLASH_ESCAPES
+// when the server reports it; collations whose multibyte characters can
+// contain a backslash (big5, cp932, gbk, gb18030, sjis) cannot have string
+// arguments: use Prepare.
 func (conn *Conn) Query(query string, args ...any) (*Rows, error) {
 	if len(args) > 0 {
 		var err error

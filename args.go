@@ -1,6 +1,7 @@
 package gomysql
 
 import (
+	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
@@ -34,7 +35,9 @@ func convertArg(arg any) (any, error) {
 		return string(b), nil
 	}
 
-	switch arg.(type) {
+	switch v := arg.(type) {
+	case sql.NamedArg:
+		return nil, fmt.Errorf("gomysql: sql.Named %q among positional arguments", v.Name)
 	case nil, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64,
 		float32, float64, bool, string, []byte, time.Time:
 		return arg, nil
@@ -95,21 +98,41 @@ func errArgCount(placeholders, args int) error {
 }
 
 // interpolate replaces the placeholders of query with args as SQL
-// literals, for the text protocol. A ? is a placeholder where the server
-// would see one in a prepared statement: not in a string, a quoted
-// identifier or a comment.
+// literals, for the text protocol. A ? or :name is a placeholder where the
+// server would see one in a prepared statement: not in a string, a quoted
+// identifier or a comment. A slice argument becomes a list.
 func (conn *Conn) interpolate(query string, args []any) (string, error) {
-	unsafe := unsafeCollation(conn.config.Collation)
+	var b binder
+	if err := b.init(args); err != nil {
+		return "", err
+	}
+
+	var err error
 
 	e := escaper{
 		loc:         conn.config.Location,
 		noBackslash: conn.statusFlags&serverStatusNoBackslashEscapes != 0,
+		unsafe:      unsafeCollation(conn.config.Collation),
+		collation:   conn.config.Collation,
 	}
 
 	buf := make([]byte, 0, len(query)+16*len(args))
-	n := 0
 
 	for i := 0; i < len(query); {
+		// Copy what can start neither a placeholder nor what skipNonCode
+		// skips at once.
+		j := i
+		for j < len(query) && !special[query[j]] {
+			j++
+		}
+
+		if j > i {
+			buf = append(buf, query[i:j]...)
+			i = j
+
+			continue
+		}
+
 		end := skipNonCode(query, i, !e.noBackslash)
 		if end > i {
 			buf = append(buf, query[i:end]...)
@@ -118,44 +141,56 @@ func (conn *Conn) interpolate(query string, args []any) (string, error) {
 			continue
 		}
 
-		if query[i] != '?' {
+		var arg any
+
+		switch end = namedEnd(query, i); {
+		case query[i] == '?':
+			var (
+				n  int
+				ok bool
+			)
+
+			if n, ok, err = b.positional(); err != nil {
+				return "", err
+			} else if !ok {
+				return "", errArgCount(countPlaceholders(query, !e.noBackslash), len(args))
+			}
+
+			arg = args[n]
+
+			end = i + 1
+		case end > i:
+			if arg, err = b.named(query[i+1 : end]); err != nil {
+				return "", err
+			}
+		default:
 			buf = append(buf, query[i])
 			i++
 
 			continue
 		}
 
-		if n == len(args) {
-			return "", errArgCount(countPlaceholders(query, !e.noBackslash), len(args))
-		}
-
-		arg, err := convertArg(args[n])
-		if err != nil {
-			return "", fmt.Errorf("argument %d: %w", n, err)
-		}
-
-		switch arg.(type) {
-		case string, []byte:
-			if unsafe {
-				return "", fmt.Errorf("gomysql: strings cannot be escaped safely in the collation %s; "+
-					"use Prepare", conn.config.Collation)
+		if buf, err = e.appendArg(buf, arg); err != nil {
+			if query[i] == '?' {
+				return "", fmt.Errorf("argument %d: %w", b.next-1, err)
 			}
+
+			return "", fmt.Errorf("%s: %w", query[i:end], err)
 		}
 
-		if buf, err = e.appendLiteral(buf, arg); err != nil {
-			return "", fmt.Errorf("argument %d: %w", n, err)
-		}
-
-		n++
-		i++
+		i = end
 	}
 
-	if n != len(args) {
-		return "", errArgCount(n, len(args))
+	if err := b.done(query, !e.noBackslash); err != nil {
+		return "", err
 	}
 
 	return string(buf), nil
 }
+
+// special marks the bytes that start a placeholder, a string, a quoted
+// identifier or a comment.
+var special = [256]bool{'?': true, ':': true, '\'': true, '"': true, '`': true, '#': true, '-': true, '/': true}
 
 // skipNonCode returns the end of the string, quoted identifier or comment
 // that starts at query[i], or i if none starts there. Versioned comments
@@ -252,6 +287,50 @@ func unsafeCollation(name string) bool {
 type escaper struct {
 	loc         *time.Location
 	noBackslash bool // NO_BACKSLASH_ESCAPES: only quotes are escaped, by doubling them
+	unsafe      bool // strings cannot be escaped in the collation
+	collation   string
+}
+
+// appendArg appends arg as an SQL literal, and a slice as a list of them.
+func (e *escaper) appendArg(buf []byte, arg any) ([]byte, error) {
+	list, ok := expandable(arg)
+	if !ok {
+		return e.appendConverted(buf, arg)
+	}
+
+	if list.Len() == 0 {
+		return buf, errEmptySlice
+	}
+
+	for i := range list.Len() {
+		if i > 0 {
+			buf = append(buf, ", "...)
+		}
+
+		var err error
+		if buf, err = e.appendConverted(buf, list.Index(i).Interface()); err != nil {
+			return buf, fmt.Errorf("element %d: %w", i, err)
+		}
+	}
+
+	return buf, nil
+}
+
+func (e *escaper) appendConverted(buf []byte, arg any) ([]byte, error) {
+	v, err := convertArg(arg)
+	if err != nil {
+		return buf, err
+	}
+
+	switch v.(type) {
+	case string, []byte:
+		if e.unsafe {
+			return buf, fmt.Errorf("gomysql: strings cannot be escaped safely in the collation %s; "+
+				"use Prepare", e.collation)
+		}
+	}
+
+	return e.appendLiteral(buf, v)
 }
 
 var errNonFinite = errors.New("gomysql: MySQL has no NaN or infinite floats")
