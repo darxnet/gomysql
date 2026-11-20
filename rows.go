@@ -21,7 +21,9 @@ type Rows struct {
 	done    bool // the rows are read up to the end, or failed
 	closed  bool
 	binary  bool
-	scratch [32]byte // TIME values of the binary protocol, as text
+	// TIME values of the binary protocol of this row, as text: each its
+	// own bytes, for sql.RawBytes. Valid until Next.
+	text []byte
 }
 
 // Next reads the next row for Scan. It returns false at the end of the rows
@@ -41,7 +43,7 @@ func (rows *Rows) Next() bool {
 	case buf[0] == iERR:
 		rows.err = rows.conn.processERRPacket(buf)
 	default:
-		rows.buf = buf
+		rows.buf, rows.text = buf, rows.text[:0]
 
 		return true
 	}
@@ -258,7 +260,7 @@ func (rows *Rows) scanBinary(dest []any) error {
 			v.setInt(u, signed)
 		} else {
 			d := decoder{buf: buf}
-			v.readBinary(&d, col, rows.scratch[:0])
+			v.readBinary(&d, col, &rows.text)
 
 			if d.bad {
 				return malformed("binary row")
