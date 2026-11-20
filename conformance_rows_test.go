@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -305,3 +306,62 @@ func TestConformanceInterpolationRoundTrip(t *testing.T) {
 }
 
 func ptrTo[T any](v T) *T { return &v }
+
+// :name placeholders take sql.Named, struct and map arguments in both
+// protocols; a slice becomes a list in the text protocol.
+func TestConformanceNamedArgs(t *testing.T) {
+	t.Parallel()
+
+	c := confConn(t, "b", "b")
+	defer confRecover(t)
+
+	type user struct {
+		ID   int64  `db:"id"`
+		Name string `db:"name"`
+	}
+
+	for _, args := range [][]any{
+		{sql.Named("id", 7), sql.Named("name", "o'k")},
+		{user{ID: 7, Name: "o'k"}},
+		{&user{ID: 7, Name: "o'k"}},
+		{map[string]any{"id": 7, "name": "o'k"}},
+	} {
+		for _, binary := range []bool{false, true} {
+			var (
+				id, again int64
+				name      string
+			)
+
+			rows := queryRows(t, c, binary, "SELECT :id, :name, :id /* :x */", args...)
+			if !rows.Next() {
+				t.Fatal("no row", rows.Err())
+			}
+
+			if err := rows.Scan(&id, &name, &again); err != nil || id != 7 || name != "o'k" || again != 7 {
+				t.Errorf("binary %v, %T: %d %q %d %v", binary, args[0], id, name, again, err)
+			}
+
+			_ = rows.Close()
+		}
+	}
+
+	var n int
+	if err := c.QueryRow("SELECT COUNT(*) FROM (SELECT 1 AS v UNION SELECT 2 UNION SELECT 3) t "+
+		"WHERE v IN (:vs) AND ? = 1", sql.Named("vs", []int{1, 3})).Scan(&n); err == nil {
+		t.Error("mixed placeholders: no error")
+	}
+
+	if err := c.QueryRow("SELECT COUNT(*) FROM (SELECT 1 AS v UNION SELECT 2 UNION SELECT 3) t WHERE v IN (?)",
+		[]int{1, 3}).Scan(&n); err != nil || n != 2 {
+		t.Errorf("IN (?): %d, %v", n, err)
+	}
+
+	stmt, err := c.Prepare("SELECT 1 IN (?)")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := stmt.Exec([]int{1}); err == nil || !strings.Contains(err.Error(), "fixed number of placeholders") {
+		t.Errorf("slice in Stmt: %v", err)
+	}
+}

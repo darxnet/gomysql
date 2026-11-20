@@ -83,8 +83,11 @@ func TestInterpolateErrors(t *testing.T) {
 		{&Conn{}, "SELECT ?", []any{1, 2}, "1 placeholders in the query, 2 arguments"},
 		{&Conn{}, "SELECT '?'", []any{1}, "0 placeholders in the query, 1 arguments"},
 		{&Conn{}, "SELECT ?", []any{math.NaN()}, "no NaN"},
-		{&Conn{}, "SELECT ?", []any{struct{}{}}, "unsupported argument type struct {}"},
-		{&Conn{}, "SELECT ?", []any{[]int{1}}, "unsupported argument type []int"},
+		{&Conn{}, "SELECT ?", []any{struct{}{}}, "are for :name placeholders"},
+		{&Conn{}, "SELECT ?, ?", []any{1, struct{}{}}, "unsupported argument type struct {}"},
+		{&Conn{}, "SELECT ?", []any{[]int{}}, "IN () is a syntax error"},
+		{&Conn{}, "SELECT ?", []any{[]struct{}{{}}}, "argument 0: element 0: gomysql: unsupported argument type struct {}"},
+		{&Conn{}, "SELECT ?, ?", []any{1, sql.Named("a", 1)}, `sql.Named "a" among positional arguments`},
 		{&Conn{config: Config{Collation: "gbk_chinese_ci"}}, "SELECT ?", []any{"x"}, "use Prepare"},
 		{&Conn{config: Config{Collation: "GBK_bin"}}, "SELECT ?", []any{argString("x")}, "use Prepare"},
 		{&Conn{config: Config{Collation: "sjis_bin"}}, "SELECT ?, ?", []any{1, ptrTo("x")}, "use Prepare"},
@@ -120,6 +123,10 @@ func FuzzInterpolate(f *testing.F) {
 				continue
 			}
 
+			if _, names, err := rewriteNamed(query, !noBackslash); err != nil || names != nil {
+				continue
+			}
+
 			conn := &Conn{}
 			if noBackslash {
 				conn.statusFlags = serverStatusNoBackslashEscapes
@@ -128,6 +135,11 @@ func FuzzInterpolate(f *testing.F) {
 			got, err := conn.interpolate(query, []any{arg})
 			if err != nil {
 				t.Fatal(err)
+			}
+
+			if _, names, _ := rewriteNamed(got, !noBackslash); names != nil {
+				t.Fatalf("noBackslash %v: %q with %q gives %q, with :name placeholders %v",
+					noBackslash, query, arg, got, names)
 			}
 
 			if n := countPlaceholders(got, !noBackslash); n != 0 {
