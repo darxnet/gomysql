@@ -12,7 +12,8 @@ import (
 // Rows is the result of a query: of Conn.Query in the text protocol, of
 // Stmt.Query in the binary protocol. It is used like *sql.Rows: Next
 // before every Scan, Err after the loop, and Close to free the connection
-// for the next command.
+// for the next command. Until the rows are read to the end or closed, other
+// commands of the connection fail with ErrBusy.
 type Rows struct {
 	conn    *Conn
 	columns []columnDefinition
@@ -34,6 +35,40 @@ type Rows struct {
 	direct     bool
 	dest       []any
 	destOf     any
+}
+
+// errRowsGone is the error of Rows whose connection was closed or
+// reconnected before they were read.
+var errRowsGone = fmt.Errorf("%w: the connection of the Rows was closed or reconnected", sql.ErrConnDone)
+
+// openRows makes rows the open Rows of the connection, until they are
+// read or closed; Rows without a row and without more results are done at
+// once.
+func (conn *Conn) openRows(rows *Rows) *Rows {
+	conn.rows = rows
+
+	if rows.done && conn.statusFlags&serverStatusMoreResultsExists == 0 {
+		rows.err = rows.release(nil)
+	}
+
+	return rows
+}
+
+// dropRows ends the open Rows, if any, without reading them: the
+// connection is closed or replaced.
+func (conn *Conn) dropRows() {
+	if rows := conn.rows; rows != nil {
+		rows.err, rows.buf, rows.done = errRowsGone, nil, true
+		conn.rows = nil
+	}
+}
+
+// release ends the command of the rows: the connection is idle again, or
+// broken by err.
+func (rows *Rows) release(err error) error {
+	rows.conn.rows = nil
+
+	return rows.conn.end(err)
 }
 
 // Next reads the next row for Scan. It returns false at the end of the rows
@@ -58,9 +93,19 @@ func (rows *Rows) Next() bool {
 		return true
 	}
 
-	rows.buf, rows.done = nil, true
+	rows.end()
 
 	return false
+}
+
+// end ends the rows at their last packet or an error. More results are
+// read by Close.
+func (rows *Rows) end() {
+	rows.buf, rows.done = nil, true
+
+	if rows.err != nil || rows.conn.statusFlags&serverStatusMoreResultsExists == 0 {
+		rows.err = rows.release(rows.err)
+	}
 }
 
 // Err returns the error that ended the rows, if any.
@@ -79,6 +124,12 @@ func (rows *Rows) Close() error {
 	rows.closed = true
 	rows.releaseDest()
 
+	if rows.conn.rows != rows { // read to the end, or the connection is gone
+		rows.buf, rows.done = nil, true
+
+		return rows.err
+	}
+
 	if !rows.done {
 		rows.buf, rows.done = nil, true
 		rows.err = rows.conn.readUntilEOF()
@@ -87,6 +138,8 @@ func (rows *Rows) Close() error {
 	if rows.err == nil {
 		rows.err = rows.conn.readMoreResults()
 	}
+
+	rows.err = rows.release(rows.err)
 
 	return rows.err
 }

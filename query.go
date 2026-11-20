@@ -1,5 +1,7 @@
 package gomysql
 
+import "context"
+
 const comQuery byte = 0x03
 
 // Query runs query in the text protocol and returns its rows. A statement
@@ -23,6 +25,13 @@ const comQuery byte = 0x03
 // contain a backslash (big5, cp932, gbk, gb18030, sjis) cannot have string
 // arguments: use Prepare.
 func (conn *Conn) Query(query string, args ...any) (*Rows, error) {
+	return conn.QueryContext(context.Background(), query, args...)
+}
+
+// QueryContext is Query within ctx, which applies until the Rows are
+// read or closed: canceling it interrupts the query and breaks the
+// connection.
+func (conn *Conn) QueryContext(ctx context.Context, query string, args ...any) (*Rows, error) {
 	if len(args) > 0 {
 		var err error
 
@@ -32,29 +41,38 @@ func (conn *Conn) Query(query string, args ...any) (*Rows, error) {
 		}
 	}
 
-	if err := writeCommand(conn, comQuery, query); err != nil {
+	if err := conn.begin(ctx); err != nil {
 		return nil, err
+	}
+
+	if err := writeCommand(conn, comQuery, query); err != nil {
+		return nil, conn.end(err)
 	}
 
 	n, err := conn.readResultHeader()
 	if err != nil {
-		return nil, err
+		return nil, conn.end(err)
 	}
 
 	// A statement without a result set, such as DO 1, has no rows.
 	rows := &Rows{conn: conn, done: n == 0, columns: make([]columnDefinition, n), loc: conn.config.Location}
 
 	if err := conn.readColumns(rows.columns); err != nil {
-		return nil, err
+		return nil, conn.end(err)
 	}
 
-	return rows, nil
+	return conn.openRows(rows), nil
 }
 
 // QueryRow runs query like Query and returns the first row; Row.Scan
 // reads it and closes the rows.
 func (conn *Conn) QueryRow(query string, args ...any) *Row {
-	rows, err := conn.Query(query, args...)
+	return conn.QueryRowContext(context.Background(), query, args...)
+}
+
+// QueryRowContext is QueryRow within ctx.
+func (conn *Conn) QueryRowContext(ctx context.Context, query string, args ...any) *Row {
+	rows, err := conn.QueryContext(ctx, query, args...)
 
 	return &Row{rows: rows, err: err}
 }
@@ -79,6 +97,12 @@ func (r *Result) RowsAffected() (int64, error) {
 // Exec runs query, with args interpolated as by Query, and returns its
 // result. Rows it returns are skipped.
 func (conn *Conn) Exec(query string, args ...any) (*Result, error) {
+	return conn.ExecContext(context.Background(), query, args...)
+}
+
+// ExecContext is Exec within ctx: canceling it interrupts the statement
+// and breaks the connection.
+func (conn *Conn) ExecContext(ctx context.Context, query string, args ...any) (*Result, error) {
 	if len(args) > 0 {
 		var err error
 
@@ -88,11 +112,17 @@ func (conn *Conn) Exec(query string, args ...any) (*Result, error) {
 		}
 	}
 
-	if err := writeCommand(conn, comQuery, query); err != nil {
+	if err := conn.begin(ctx); err != nil {
 		return nil, err
 	}
 
-	return conn.readResult()
+	if err := writeCommand(conn, comQuery, query); err != nil {
+		return nil, conn.end(err)
+	}
+
+	result, err := conn.readResult()
+
+	return result, conn.end(err)
 }
 
 // readResult reads the response to a command run for its result: the
