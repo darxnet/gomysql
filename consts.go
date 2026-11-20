@@ -17,8 +17,6 @@ const (
 	writerMinCompressSize = 50
 )
 
-const timeFormat string = "2006-01-02 15:04:05.000000"
-
 // https://dev.mysql.com/doc/internals/en/generic-response-packets.html
 const (
 	iOK  byte = 0x00

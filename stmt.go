@@ -2,7 +2,7 @@ package gomysql
 
 import (
 	"encoding/binary"
-	"errors"
+	"fmt"
 	"math"
 	"reflect"
 	"time"
@@ -120,7 +120,7 @@ func (stmt *Stmt) Exec(args ...any) (*Result, error) {
 // execute sends COM_STMT_EXECUTE.
 func (stmt *Stmt) execute(args []any) error {
 	if len(stmt.params) != len(args) {
-		return errors.New("wrong args count")
+		return errArgCount(len(stmt.params), len(args))
 	}
 
 	// COM_STMT_EXECUTE after the command byte: stmt-id, flags (no cursor),
@@ -141,13 +141,16 @@ func (stmt *Stmt) execute(args []any) error {
 		var values []byte
 
 		for i, arg := range args {
-			if arg == nil {
+			v, err := convertArg(arg)
+			if err != nil {
+				return fmt.Errorf("argument %d: %w", i, err)
+			}
+
+			if v == nil {
 				buf[posNull+i/8] |= 1 << (i % 8)
 			}
 
-			var err error
-
-			types, values, err = appendParam(types, values, arg, stmt.conn.config.Location)
+			types, values, err = appendParam(types, values, v, stmt.conn.config.Location)
 			if err != nil {
 				return err
 			}

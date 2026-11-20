@@ -228,3 +228,80 @@ func TestConformanceConversions(t *testing.T) {
 		}
 	}
 }
+
+// Interpolated strings come back unchanged, with and without
+// NO_BACKSLASH_ESCAPES, and so do the arguments database/sql converts.
+func TestConformanceInterpolationRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	c := confConn(t, "b", "b")
+	defer confRecover(t)
+
+	tricky := []string{
+		"", "'", "''", `\`, `\'`, `'\`, `"`, "\x00", "\n\r\x1a", "?", "-- ?", "/* ? */", "#", "`",
+		"ünï©ødé 😀", "\xff\xfe", "a\\'; DROP TABLE t; --",
+	}
+
+	for _, mode := range []string{"", "NO_BACKSLASH_ESCAPES"} {
+		mustExec(t, c, "SET SESSION sql_mode = '"+mode+"'")
+
+		for _, s := range tricky {
+			var got, gotBytes string
+			if err := c.QueryRow("SELECT ?, ?", s, []byte(s)).Scan(&got, &gotBytes); err != nil || got != s || gotBytes != s {
+				t.Errorf("sql_mode %q: %q, %q, %v; want %q", mode, got, gotBytes, err, s)
+			}
+		}
+	}
+
+	type id int64
+
+	type name string
+
+	args := []any{
+		id(-5), name("x"), ptrTo(int64(7)), (*string)(nil), sql.NullInt64{}, sql.NullString{String: "y", Valid: true},
+	}
+
+	for _, binary := range []bool{false, true} {
+		rows := queryRows(t, c, binary, "SELECT ?, ?, ?, ?, ?, ?", args...)
+		if !rows.Next() {
+			t.Fatal("no row", rows.Err())
+		}
+
+		var (
+			a      int64
+			b      string
+			p      int64
+			n1, n2 sql.NullString
+			s      string
+		)
+
+		if err := rows.Scan(&a, &b, &p, &n1, &n2, &s); err != nil {
+			t.Fatalf("binary %v: %v", binary, err)
+		}
+
+		if a != -5 || b != "x" || p != 7 || n1.Valid || n2.Valid || s != "y" {
+			t.Errorf("binary %v: %d %q %d %v %v %q", binary, a, b, p, n1, n2, s)
+		}
+
+		_ = rows.Close()
+	}
+
+	// MySQL refuses JSON from a binary string, so json.RawMessage is text.
+	mustExec(t, c, "CREATE TEMPORARY TABLE json_arg (j JSON)")
+
+	stmt, err := c.Prepare("INSERT INTO json_arg VALUES (?)")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, exec := range []func(...any) (*gomysql.Result, error){
+		func(args ...any) (*gomysql.Result, error) { return c.Exec("INSERT INTO json_arg VALUES (?)", args...) },
+		stmt.Exec,
+	} {
+		if _, err := exec(json.RawMessage(`{"a": 1}`)); err != nil {
+			t.Errorf("json.RawMessage: %v", err)
+		}
+	}
+}
+
+func ptrTo[T any](v T) *T { return &v }

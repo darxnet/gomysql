@@ -31,13 +31,7 @@ var tblSeq atomic.Uint32
 // knownBugs lists subtests that fail on known bugs, with the ROADMAP phase
 // that fixes them. A fix removes its entry, so the test then guards it.
 var knownBugs = map[string]string{
-	"TestConformanceInterpolation/escaped":              "phase 9: interpolation",
-	"TestConformanceInterpolation/question-mark-in-arg": "phase 9: interpolation",
-	"TestConformanceInterpolation/float-precision":      "phase 9: interpolation",
-	"TestConformanceInterpolation/time-arg":             "phase 9: interpolation",
-	"TestConformanceSQLInjection/1_OR_1=1":              "phase 9: interpolation",
-	"TestConformanceSQLInjection/'_OR_'1'='1":           "phase 9: interpolation",
-	"TestConformanceAuth/c2":                            "phase 7: caching_sha2_password",
+	"TestConformanceAuth/c2": "phase 7: caching_sha2_password",
 }
 
 func knownBug(t *testing.T) {
