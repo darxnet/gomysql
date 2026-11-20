@@ -206,7 +206,7 @@ func Structs[T any](rows *Rows, err error) ([]T, error) {
 //	users, err = gomysql.AppendStructs(users[:0])(conn.Query(q))
 func AppendStructs[T any](dst []T) func(*Rows, error) ([]T, error) {
 	return func(rows *Rows, err error) ([]T, error) {
-		return appendRows(dst, rows, err, func(rows *Rows, v *T) error { return rows.ScanStruct(v) })
+		return appendRows(dst, rows, err, true)
 	}
 }
 
@@ -224,13 +224,13 @@ func Values[T any](rows *Rows, err error) ([]T, error) {
 //	ids, err = gomysql.AppendValues(ids[:0])(conn.Query(q))
 func AppendValues[T any](dst []T) func(*Rows, error) ([]T, error) {
 	return func(rows *Rows, err error) ([]T, error) {
-		return appendRows(dst, rows, err, func(rows *Rows, v *T) error { return rows.Scan(v) })
+		return appendRows(dst, rows, err, false)
 	}
 }
 
 // appendRows scans each row into one T, zeroed first, and appends it to
 // dst: the destinations of a struct are found once, not per row.
-func appendRows[T any](dst []T, rows *Rows, err error, scan func(*Rows, *T) error) ([]T, error) {
+func appendRows[T any](dst []T, rows *Rows, err error, structs bool) ([]T, error) {
 	if err != nil {
 		return dst, err
 	}
@@ -248,7 +248,14 @@ func appendRows[T any](dst []T, rows *Rows, err error, scan func(*Rows, *T) erro
 	for rows.Next() {
 		*v = zero
 
-		if err := scan(rows, v); err != nil {
+		var err error
+		if structs {
+			err = rows.ScanStruct(v)
+		} else {
+			err = rows.Scan(v)
+		}
+
+		if err != nil {
 			return dst, err
 		}
 
