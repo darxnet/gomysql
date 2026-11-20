@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"time"
 )
 
@@ -24,6 +25,15 @@ type Rows struct {
 	// TIME values of the binary protocol of this row, as text: each its
 	// own bytes, for sql.RawBytes. Valid until Next.
 	text []byte
+
+	// ScanStruct: the type of the last struct, the field of each column in
+	// it, and whether none is behind a pointer; the destinations for Scan,
+	// pointers into the struct destOf points to.
+	structType reflect.Type
+	plan       [][]int
+	direct     bool
+	dest       []any
+	destOf     any
 }
 
 // Next reads the next row for Scan. It returns false at the end of the rows
@@ -67,6 +77,7 @@ func (rows *Rows) Close() error {
 	}
 
 	rows.closed = true
+	rows.releaseDest()
 
 	if !rows.done {
 		rows.buf, rows.done = nil, true
@@ -292,6 +303,11 @@ func (r *Row) Err() error {
 // Scan copies the columns of the row into dest, like Rows.Scan, and closes
 // the rows. Without a row it returns sql.ErrNoRows.
 func (r *Row) Scan(dest ...any) error {
+	return r.scan(func(rows *Rows) error { return rows.Scan(dest...) })
+}
+
+// scan runs scan on the row and closes the rows.
+func (r *Row) scan(scan func(*Rows) error) error {
 	if r.err != nil {
 		return r.err
 	}
@@ -306,7 +322,7 @@ func (r *Row) Scan(dest ...any) error {
 		return sql.ErrNoRows
 	}
 
-	if err := r.rows.Scan(dest...); err != nil {
+	if err := scan(r.rows); err != nil {
 		return err
 	}
 

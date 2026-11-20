@@ -59,7 +59,7 @@ type binder struct {
 	values []any          // of sql.NamedArg
 	used   []bool         // of values
 	src    reflect.Value  // a struct or a map
-	fields map[string][]int
+	fields *structInfo
 
 	sawPositional, sawNamed bool
 }
@@ -200,7 +200,7 @@ func (b *binder) named(name string) (any, error) {
 
 		return v.Interface(), nil
 	case b.src.IsValid():
-		index := lookupField(b.fields, name)
+		index := b.fields.lookup(name)
 		if index == nil {
 			return nil, fmt.Errorf("gomysql: no field of %s for :%s", b.src.Type(), name)
 		}
@@ -237,18 +237,30 @@ func (b *binder) done(query string, backslash bool) error {
 	return nil
 }
 
-var fieldCache sync.Map // reflect.Type to map[string][]int
+var fieldCache sync.Map // reflect.Type to *structInfo
 
-// structFields maps the names of the fields of t, through embedded
-// structs, to their index: the db tag without options after a comma, or
-// the name of the field; db:"-" skips a field. Shallower fields hide deeper ones, as in encoding/json.
-func structFields(t reflect.Type) map[string][]int {
+// structInfo is the fields of a struct type that columns and :name
+// placeholders are matched with.
+type structInfo struct {
+	byName map[string]int // exact names, to fields
+	fields []structField  // in order of declaration
+}
+
+type structField struct {
+	name   string
+	index  []int
+	tagged bool
+}
+
+// structFields returns the fields of t, through embedded structs: the db
+// tag without options after a comma, or the name of the field; db:"-"
+// skips a field. Shallower fields hide deeper ones, as in encoding/json.
+func structFields(t reflect.Type) *structInfo {
 	if f, ok := fieldCache.Load(t); ok {
-		return f.(map[string][]int) //nolint:forcetypeassert // only maps are stored
+		return f.(*structInfo) //nolint:forcetypeassert // only *structInfo is stored
 	}
 
-	fields := make(map[string][]int)
-	depth := make(map[string]int)
+	info := &structInfo{byName: make(map[string]int)}
 
 	var walk func(t reflect.Type, index []int)
 
@@ -287,32 +299,53 @@ func structFields(t reflect.Type) map[string][]int {
 				name = tag
 			}
 
-			if d, ok := depth[name]; !ok || len(idx) < d {
-				fields[name], depth[name] = idx, len(idx)
+			if j, ok := info.byName[name]; !ok {
+				info.byName[name] = len(info.fields)
+				info.fields = append(info.fields, structField{name: name, index: idx, tagged: tagged && tag != ""})
+			} else if len(idx) < len(info.fields[j].index) {
+				info.fields[j] = structField{name: name, index: idx, tagged: tagged && tag != ""}
 			}
 		}
 	}
 
 	walk(t, nil)
 
-	f, _ := fieldCache.LoadOrStore(t, fields)
+	f, _ := fieldCache.LoadOrStore(t, info)
 
-	return f.(map[string][]int) //nolint:forcetypeassert // only maps are stored
+	return f.(*structInfo) //nolint:forcetypeassert // only *structInfo is stored
 }
 
-// lookupField finds name exactly, or else ignoring case.
-func lookupField(fields map[string][]int, name string) []int {
-	if index, ok := fields[name]; ok {
+// lookup finds the field of name: the exact name, else ignoring case, else
+// a field without a db tag ignoring case and underscores, so that user_id
+// finds UserID. Among fields that match alike, the shallowest wins, then
+// the first declared.
+func (info *structInfo) lookup(name string) []int {
+	if j, ok := info.byName[name]; ok {
+		return info.fields[j].index
+	}
+
+	if index := info.find(func(f *structField) bool { return strings.EqualFold(f.name, name) }); index != nil {
 		return index
 	}
 
-	for n, index := range fields {
-		if strings.EqualFold(n, name) {
-			return index
+	bare := strings.ReplaceAll(name, "_", "")
+
+	return info.find(func(f *structField) bool {
+		return !f.tagged && strings.EqualFold(strings.ReplaceAll(f.name, "_", ""), bare)
+	})
+}
+
+// find returns the shallowest field that matches, the first declared.
+func (info *structInfo) find(match func(*structField) bool) []int {
+	var index []int
+
+	for i := range info.fields {
+		if f := &info.fields[i]; (index == nil || len(f.index) < len(index)) && match(f) {
+			index = f.index
 		}
 	}
 
-	return nil
+	return index
 }
 
 // expandable reports whether arg is a slice to expand into a list: not

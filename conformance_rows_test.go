@@ -3,6 +3,7 @@ package gomysql_test
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"math"
 	"os"
 	"reflect"
@@ -364,5 +365,76 @@ func TestConformanceNamedArgs(t *testing.T) {
 
 	if _, err := stmt.Exec([]int{1}); err == nil || !strings.Contains(err.Error(), "fixed number of placeholders") {
 		t.Errorf("slice in Stmt: %v", err)
+	}
+}
+
+func TestConformanceStructs(t *testing.T) {
+	t.Parallel()
+
+	c := confConn(t, "b", "b")
+	defer confRecover(t)
+
+	type user struct {
+		ID       int64
+		UserName string
+		Note     sql.NullString `db:"note"`
+	}
+
+	const q = "SELECT 1 AS id, 'ann' AS user_name, NULL AS note UNION ALL SELECT 2, 'bob', 'x'"
+
+	want := []user{{1, "ann", sql.NullString{}}, {2, "bob", sql.NullString{String: "x", Valid: true}}}
+
+	for _, binary := range []bool{false, true} {
+		got, err := gomysql.Structs[user](queryRows(t, c, binary, q), nil)
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Errorf("binary %v: Structs %+v, %v", binary, got, err)
+		}
+
+		// Appended into the same memory.
+		again, err := gomysql.AppendStructs(got[:0])(queryRows(t, c, binary, q), nil)
+		if err != nil || !reflect.DeepEqual(again, want) || &again[0] != &got[0] {
+			t.Errorf("binary %v: AppendStructs %+v, %v", binary, again, err)
+		}
+
+		ids, err := gomysql.Values[uint64](queryRows(t, c, binary, "SELECT 3 UNION ALL SELECT 4"), nil)
+		if err != nil || !reflect.DeepEqual(ids, []uint64{3, 4}) {
+			t.Errorf("binary %v: Values %v, %v", binary, ids, err)
+		}
+	}
+
+	ids, err := gomysql.AppendValues([]int64{1})(c.Query("SELECT 2 UNION ALL SELECT 3"))
+	if err != nil || !reflect.DeepEqual(ids, []int64{1, 2, 3}) {
+		t.Errorf("AppendValues %v, %v", ids, err)
+	}
+
+	if got, err := gomysql.Structs[user](c.Query(q + " LIMIT 0")); err != nil || got != nil {
+		t.Errorf("no rows: %v, %v", got, err)
+	}
+
+	if _, err := gomysql.Structs[user](c.Query("SELECT nope")); err == nil {
+		t.Error("query error: none")
+	}
+
+	// A scan error stops at that row; the connection stays usable.
+	if got, err := gomysql.Structs[user](c.Query(q + " UNION ALL SELECT 'x', 'c', NULL")); err == nil {
+		t.Errorf("bad id: %+v", got)
+	}
+
+	if u, err := gomysql.Struct[user](c.QueryRow(q + " LIMIT 1 OFFSET 1")); err != nil || u != want[1] {
+		t.Errorf("Struct %+v, %v", u, err)
+	}
+
+	if _, err := gomysql.Struct[user](c.QueryRow(q + " LIMIT 0")); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("Struct without a row: %v", err)
+	}
+
+	if n, err := gomysql.Value[int64](c.QueryRow("SELECT COUNT(*) FROM (" + q + ") t")); err != nil || n != 2 {
+		t.Errorf("Value %d, %v", n, err)
+	}
+
+	// :user_name finds UserName, as the column does.
+	var name string
+	if err := c.QueryRow("SELECT :user_name", user{UserName: "ann"}).Scan(&name); err != nil || name != "ann" {
+		t.Errorf(":user_name %q, %v", name, err)
 	}
 }

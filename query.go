@@ -7,10 +7,10 @@ const comQuery byte = 0x03
 //
 // The placeholders of query are replaced by args as SQL literals, on the
 // client. They are ? for positional arguments or :name for named ones,
-// not both: sql.Named arguments, or one struct (fields by the db tag, or
-// else their name ignoring case; db:"-" skips one) or map with string
-// keys. A placeholder in a string, a quoted identifier or a comment is not
-// one, as for the server in a prepared statement, nor is a colon after an
+// not both: sql.Named arguments, or one struct (fields found as by
+// Rows.ScanStruct, so :user_id finds UserID) or map with string keys. A
+// placeholder in a string, a quoted identifier or a comment is not one,
+// as for the server in a prepared statement, nor is a colon after an
 // identifier or a colon (lbl:LOOP, @a:=1). A query without args is sent
 // as it is.
 //
