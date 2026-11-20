@@ -21,7 +21,10 @@ type Conn struct {
 	statusFlags  uint16
 	sequence     byte
 
-	session uint64 // counts connections, for statements prepared on one
+	session uint64 // counts sessions, for statements prepared in one
+
+	authPlugin string // of the handshake
+	nonce      []byte // of the handshake
 
 	state uint8
 	cause error // of stateBroken
@@ -86,7 +89,12 @@ func (conn *Conn) ReconnectContext(ctx context.Context) error {
 
 	err := conn.watch(ctx)
 	if err == nil {
-		err = conn.end(conn.connect())
+		err = conn.connect()
+		if err == nil {
+			err = conn.initSession()
+		}
+
+		err = conn.end(err)
 	}
 
 	// Even a refusal of the server leaves no connection.
@@ -105,6 +113,9 @@ func (conn *Conn) connect() error {
 	if err != nil {
 		return err
 	}
+
+	// For ChangeUser, which answers the same nonce.
+	conn.authPlugin, conn.nonce = string(authPluginName), authPluginData
 
 	return conn.authenticate(string(authPluginName), authPluginData)
 }

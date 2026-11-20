@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -428,5 +429,47 @@ func TestTxContext(t *testing.T) {
 
 	if e := conn.Ping(); e != nil {
 		t.Errorf("Ping after Reconnect: %v", e)
+	}
+}
+
+func TestSessionCommands(t *testing.T) {
+	t.Parallel()
+
+	var sent []string
+
+	cfg := newFakeServer(t, true, func(c *fakeConn, cmd byte, payload []byte) error {
+		sent = append(sent, string(append([]byte{cmd}, payload...)))
+		if string(payload) == "err" {
+			return c.errPacket(1064, "42000", "syntax")
+		}
+
+		return c.ok()
+	}).config()
+	cfg.InitCommands = []string{"SET a", "SET b"}
+
+	conn, err := Connect(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	session := conn.session
+
+	if e := conn.ResetConnection(); e != nil {
+		t.Fatal(e)
+	}
+
+	want := []string{
+		"\x03SET a", "\x03SET b",
+		"\x1f", "\x03SET NAMES utf8mb4 COLLATE utf8mb4_general_ci", "\x03SET a", "\x03SET b",
+	}
+	if strings.Join(sent, "|") != strings.Join(want, "|") || conn.session != session+1 {
+		t.Errorf("sent %q, session %d; want %q", sent, conn.session-session, want)
+	}
+
+	// A failing init command fails the connection.
+	cfg.InitCommands = []string{"err"}
+	if _, e := Connect(cfg); e == nil || !strings.Contains(e.Error(), `init command "err"`) {
+		t.Errorf("failing init command: %v", e)
 	}
 }
