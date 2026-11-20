@@ -1,7 +1,9 @@
 package gomysql
 
 import (
+	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -10,8 +12,10 @@ import (
 
 const comStmtClose byte = 0x19
 
+// Stmt is a prepared statement of a connection.
 type Stmt struct {
 	conn    *Conn
+	session uint64 // of conn when prepared
 	query   string
 	columns []columnDefinition
 	params  []columnDefinition
@@ -19,8 +23,20 @@ type Stmt struct {
 	id      uint32
 }
 
+// Close deallocates the statement on the server (COM_STMT_CLOSE, which
+// has no response). A statement of a connection that is closed, broken or
+// reconnected since has nothing to deallocate.
 func (stmt *Stmt) Close() error {
-	return writeCommand(stmt.conn, comStmtClose, binary.LittleEndian.AppendUint32(nil, stmt.id))
+	conn := stmt.conn
+	if conn.state != stateIdle || stmt.session != conn.session {
+		return nil
+	}
+
+	if err := conn.begin(context.Background()); err != nil {
+		return err
+	}
+
+	return conn.end(writeCommand(conn, comStmtClose, binary.LittleEndian.AppendUint32(nil, stmt.id)))
 }
 
 const comStmtPrepare = 0x16
@@ -31,12 +47,27 @@ const comStmtPrepare = 0x16
 //
 // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_stmt_prepare.html
 func (conn *Conn) Prepare(query string) (*Stmt, error) {
+	return conn.PrepareContext(context.Background(), query)
+}
+
+// PrepareContext is Prepare within ctx.
+func (conn *Conn) PrepareContext(ctx context.Context, query string) (*Stmt, error) {
 	sent, names, err := rewriteNamed(query, conn.statusFlags&serverStatusNoBackslashEscapes == 0)
 	if err != nil {
 		return nil, err
 	}
 
-	err = writeCommand(conn, comStmtPrepare, sent)
+	if berr := conn.begin(ctx); berr != nil {
+		return nil, berr
+	}
+
+	stmt, err := conn.prepare(query, sent, names)
+
+	return stmt, conn.end(err)
+}
+
+func (conn *Conn) prepare(query, sent string, names []string) (*Stmt, error) {
+	err := writeCommand(conn, comStmtPrepare, sent)
 	if err != nil {
 		return nil, err
 	}
@@ -68,6 +99,7 @@ func (conn *Conn) Prepare(query string) (*Stmt, error) {
 
 	stmt := &Stmt{
 		conn:    conn,
+		session: conn.session,
 		query:   query,
 		names:   names,
 		id:      id,
@@ -93,26 +125,41 @@ const comStmtExecute byte = 0x17
 //
 // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_stmt_execute.html
 func (stmt *Stmt) Query(args ...any) (*Rows, error) {
-	if err := stmt.execute(args); err != nil {
+	return stmt.QueryContext(context.Background(), args...)
+}
+
+// QueryContext is Query within ctx, which applies until the Rows are read
+// or closed, as in Conn.QueryContext.
+func (stmt *Stmt) QueryContext(ctx context.Context, args ...any) (*Rows, error) {
+	conn := stmt.conn
+
+	if err := stmt.execute(ctx, args); err != nil {
 		return nil, err
 	}
 
-	n, err := stmt.conn.readResultHeader()
+	n, err := conn.readResultHeader()
 	if err != nil {
-		return nil, err
+		return nil, conn.end(err)
 	}
 
 	if err := stmt.readColumns(n); err != nil {
-		return nil, err
+		return nil, conn.end(err)
 	}
 
-	return &Rows{conn: stmt.conn, done: n == 0, columns: stmt.columns, loc: stmt.conn.config.Location, binary: true}, nil
+	rows := &Rows{conn: conn, done: n == 0, columns: stmt.columns, loc: conn.config.Location, binary: true}
+
+	return conn.openRows(rows), nil
 }
 
 // QueryRow executes the prepared statement like Query and returns the
 // first row; Row.Scan reads it and closes the rows.
 func (stmt *Stmt) QueryRow(args ...any) *Row {
-	rows, err := stmt.Query(args...)
+	return stmt.QueryRowContext(context.Background(), args...)
+}
+
+// QueryRowContext is QueryRow within ctx.
+func (stmt *Stmt) QueryRowContext(ctx context.Context, args ...any) *Row {
+	rows, err := stmt.QueryContext(ctx, args...)
 
 	return &Row{rows: rows, err: err}
 }
@@ -120,27 +167,63 @@ func (stmt *Stmt) QueryRow(args ...any) *Row {
 // Exec executes the prepared statement with args and returns its result.
 // Rows it returns are skipped.
 func (stmt *Stmt) Exec(args ...any) (*Result, error) {
-	if err := stmt.execute(args); err != nil {
+	return stmt.ExecContext(context.Background(), args...)
+}
+
+// ExecContext is Exec within ctx.
+func (stmt *Stmt) ExecContext(ctx context.Context, args ...any) (*Result, error) {
+	if err := stmt.execute(ctx, args); err != nil {
 		return nil, err
 	}
 
-	return stmt.conn.readResult()
+	result, err := stmt.conn.readResult()
+
+	return result, stmt.conn.end(err)
 }
 
-// execute sends COM_STMT_EXECUTE.
-func (stmt *Stmt) execute(args []any) error {
-	args, err := stmt.bind(args)
+// errStaleStmt is the error of a statement prepared before Reconnect.
+var errStaleStmt = errors.New("gomysql: the statement was prepared on the connection before Reconnect")
+
+// execute starts the command and sends COM_STMT_EXECUTE; on success the
+// command runs until end.
+func (stmt *Stmt) execute(ctx context.Context, args []any) error {
+	var scratch [64]byte
+
+	buf, err := stmt.executePacket(scratch[:0], args)
 	if err != nil {
 		return err
 	}
 
+	conn := stmt.conn
+
+	if conn.state == stateIdle && stmt.session != conn.session {
+		return errStaleStmt
+	}
+
+	if err := conn.begin(ctx); err != nil {
+		return err
+	}
+
+	if err := writeCommand(conn, comStmtExecute, buf); err != nil {
+		return conn.end(err)
+	}
+
+	return nil
+}
+
+// executePacket appends COM_STMT_EXECUTE after the command byte to buf.
+func (stmt *Stmt) executePacket(buf []byte, args []any) ([]byte, error) {
+	args, err := stmt.bind(args)
+	if err != nil {
+		return nil, err
+	}
+
 	if len(stmt.params) != len(args) {
-		return errArgCount(len(stmt.params), len(args))
+		return nil, errArgCount(len(stmt.params), len(args))
 	}
 
 	// COM_STMT_EXECUTE after the command byte: stmt-id, flags (no cursor),
 	// iteration-count 1
-	buf := make([]byte, 0, 16)
 	buf = binary.LittleEndian.AppendUint32(buf, stmt.id)
 	buf = append(buf, 0x00)
 	buf = binary.LittleEndian.AppendUint32(buf, 1)
@@ -157,12 +240,12 @@ func (stmt *Stmt) execute(args []any) error {
 
 		for i, arg := range args {
 			if _, ok := expandable(arg); ok {
-				return fmt.Errorf("argument %d: %w", i, errSliceInStmt)
+				return nil, fmt.Errorf("argument %d: %w", i, errSliceInStmt)
 			}
 
 			v, err := convertArg(arg)
 			if err != nil {
-				return fmt.Errorf("argument %d: %w", i, err)
+				return nil, fmt.Errorf("argument %d: %w", i, err)
 			}
 
 			if v == nil {
@@ -171,7 +254,7 @@ func (stmt *Stmt) execute(args []any) error {
 
 			types, values, err = appendParam(types, values, v, stmt.conn.config.Location)
 			if err != nil {
-				return err
+				return nil, err
 			}
 		}
 
@@ -179,7 +262,7 @@ func (stmt *Stmt) execute(args []any) error {
 		buf = append(buf, values...)
 	}
 
-	return writeCommand(stmt.conn, comStmtExecute, buf)
+	return buf, nil
 }
 
 // bind returns the arguments of the placeholders in order.

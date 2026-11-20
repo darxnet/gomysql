@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -69,7 +70,9 @@ func (s *fakeServer) serve(tb testing.TB) {
 			defer func() { _ = nc.Close() }()
 
 			c := &fakeConn{conn: chunkedConn{nc}, r: bufio.NewReader(nc), deprecateEOF: s.deprecateEOF}
-			if err := c.session(s.handle); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+			// A client that goes without COM_QUIT resets the connection.
+			if err := c.session(s.handle); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) &&
+				!errors.Is(err, syscall.ECONNRESET) {
 				tb.Errorf("fake server: %v", err)
 			}
 		}()

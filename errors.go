@@ -32,9 +32,10 @@ func (e *Error) Is(target error) bool {
 	return ok && t.Number == e.Number
 }
 
-// ErrBadConn means the connection is unusable: the server sent a packet
-// that could not be parsed or that the protocol did not expect (wrong
-// sequence id or packet type). Discard the connection.
+// ErrBadConn means the connection is unusable: an I/O error, a canceled
+// or expired context, or a packet that could not be parsed or that the
+// protocol did not expect (wrong sequence id or packet type). Every later
+// command fails with it, sending nothing, until Reconnect.
 //
 // It is not driver.ErrBadConn: the command may already have run on the
 // server, so repeating it on another connection is not safe.
