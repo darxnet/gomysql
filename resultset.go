@@ -21,20 +21,6 @@ type ColumnDefinition struct {
 	Decimals byte   // [1]byte
 }
 
-// intLen is the size of an integer column in the binary protocol.
-func (cd *ColumnDefinition) intLen() int {
-	switch cd.Type {
-	case myTypeLongLong:
-		return 8
-	case myTypeLong, myTypeInt24:
-		return 4
-	case myTypeShort, myTypeYear:
-		return 2
-	default: // myTypeTiny
-		return 1
-	}
-}
-
 // parse reads Protocol::ColumnDefinition41 from buf. The names are copied
 // into one new slice, since buf is reused by the next read.
 func (column *ColumnDefinition) parse(buf []byte) error {
@@ -243,62 +229,4 @@ func columnCount(buf []byte) (int, error) {
 	}
 
 	return int(n), nil
-}
-
-// resultRows is what RowsText and RowsBinary share: reading rows up to the
-// end of the result set, and draining what is left on Close.
-type resultRows struct {
-	conn    *Conn
-	columns []ColumnDefinition
-	buf     []byte // the current row
-	err     error
-	done    bool // the rows are read up to the end, or failed
-	closed  bool
-}
-
-func (r *resultRows) next() bool {
-	if r.done {
-		return false
-	}
-
-	buf, err := r.conn.readPacket()
-
-	switch {
-	case err != nil:
-		r.err = err
-	case isEOF(buf): // EOF, or OK with the EOF header under CLIENT_DEPRECATE_EOF
-		r.err = r.conn.processEOFPacket(buf)
-	case buf[0] == iERR:
-		r.err = r.conn.processERRPacket(buf)
-	default:
-		r.buf = buf
-
-		return true
-	}
-
-	r.buf, r.done = nil, true
-
-	return false
-}
-
-// close reads the rows not read yet and the results that follow, so that
-// the connection can run the next command. It returns the error that
-// ended the rows, if any.
-func (r *resultRows) close() error {
-	if r.closed {
-		return r.err
-	}
-
-	r.closed = true
-
-	if !r.done {
-		r.buf, r.done = nil, true
-		r.err = r.conn.readUntilEOF()
-	}
-
-	if r.err == nil {
-		r.err = r.conn.readMoreResults()
-	}
-
-	return r.err
 }

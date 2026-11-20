@@ -51,39 +51,35 @@ var diffCases = []diffCase{
 	{"TIMESTAMP", []any{"2026-11-18 13:31:33"}, []func() any{ints[time.Time](), ints[string]()}},
 	{"BIT(8)", []any{[]byte{0x5a}}, []func() any{ints[[]byte]()}},
 	{"ENUM('a','b')", []any{"a", "b"}, []func() any{ints[string]()}},
-	{"INT NULL", []any{nil, 7}, []func() any{ints[sql.NullInt64]()}},
-	{"VARCHAR(8) NULL", []any{nil, "x"}, []func() any{ints[sql.NullString]()}},
+	{"INT NULL", []any{nil, 7}, []func() any{ints[sql.NullInt64](), ints[*int64](), ints[any](), ints[[]byte]()}},
+	{"VARCHAR(8) NULL", []any{nil, "x"}, []func() any{ints[sql.NullString](), ints[*string](), ints[sql.RawBytes]()}},
+	{"DATETIME NULL", []any{nil, "2026-11-18 13:31:33"}, []func() any{ints[sql.NullTime](), ints[*time.Time]()}},
+
+	// More destinations: any, sql.RawBytes, bool, named types, conversions
+	// between kinds; errors must match too.
+	{"TINYINT(1)", []any{0, 1, 2}, []func() any{ints[bool](), ints[any]()}},
+	{"INT ", []any{0, -7, math.MaxInt32}, []func() any{
+		ints[any](), ints[sql.RawBytes](), ints[string](), ints[float64](), ints[myInt](), ints[uint8](), ints[sql.NullFloat64](),
+	}},
+	{"BIGINT UNSIGNED ", []any{uint64(math.MaxUint64), 5}, []func() any{ints[any](), ints[string](), ints[int64]()}},
+	{"DOUBLE ", []any{2.0, -1.5}, []func() any{ints[any](), ints[string](), ints[int64](), ints[sql.NullFloat64]()}},
+	{"FLOAT ", []any{0.1, 3.25}, []func() any{ints[any](), ints[string]()}},
+	{"DECIMAL(10,2)", []any{"1.50", "-3.00"}, []func() any{ints[float64](), ints[any](), ints[int64]()}},
+	{"VARCHAR(16) ", []any{"42", "x", "true"}, []func() any{ints[any](), ints[sql.RawBytes](), ints[int64](), ints[bool](), ints[myString]()}},
+	{"DATE ", []any{"2026-11-18", "1000-01-01"}, []func() any{ints[any](), ints[sql.NullTime](), ints[[]byte]()}},
+	{"DATETIME(3)", []any{"2026-11-18 13:31:33.120", "1000-01-01 00:00:00"}, []func() any{ints[any](), ints[string](), ints[time.Time]()}},
+	{"TIME", []any{"13:31:33", "-838:59:59", "00:00:00"}, []func() any{ints[string](), ints[[]byte]()}},
+	{"TIME(3)", []any{"-01:02:03.450", "100:00:00.000"}, []func() any{ints[string]()}},
+	{"YEAR", []any{2026, 1901}, []func() any{ints[int64](), ints[string]()}},
 }
 
+type (
+	myInt    int64
+	myString string
+)
+
 // knownDiffBugs: "TYPE/dest/protocol" → ROADMAP phase. Removed once fixed.
-var knownDiffBugs = map[string]string{
-	"TINYINT/int64/binary":                  "phase 6: sign of negative ints",
-	"TINYINT/int/binary":                    "phase 6: sign of negative ints",
-	"SMALLINT/int64/binary":                 "phase 6: sign of negative ints",
-	"MEDIUMINT/int64/binary":                "phase 6: sign of negative ints",
-	"INT/int64/binary":                      "phase 6: sign of negative ints",
-	"DOUBLE/float64/text":                   "phase 6: float dest",
-	"DOUBLE/float64/binary":                 "phase 6: float dest",
-	"FLOAT/float32/text":                    "phase 6: float dest",
-	"FLOAT/float32/binary":                  "phase 6: float dest",
-	"FLOAT/float64/text":                    "phase 6: float dest",
-	"FLOAT/float64/binary":                  "phase 6: float dest",
-	"DATE/time.Time/text":                   "phase 6: time dest",
-	"DATE/time.Time/binary":                 "phase 6: time dest",
-	"DATE/string/binary":                    "phase 6: binary DATE/DATETIME into string",
-	"DATETIME/time.Time/text":               "phase 6: time dest",
-	"DATETIME/time.Time/binary":             "phase 6: time dest",
-	"DATETIME/string/binary":                "phase 6: binary DATE/DATETIME into string",
-	"DATETIME(6)/time.Time/binary":          "phase 6: time dest",
-	"DATETIME(6)/string/binary":             "phase 6: binary DATE/DATETIME into string",
-	"TIMESTAMP/time.Time/text":              "phase 6: time dest",
-	"TIMESTAMP/time.Time/binary":            "phase 6: time dest",
-	"TIMESTAMP/string/binary":               "phase 6: binary DATE/DATETIME into string",
-	"INT NULL/sql.NullInt64/text":           "phase 6: sql.Null* dest",
-	"INT NULL/sql.NullInt64/binary":         "phase 6: sql.Null* dest",
-	"VARCHAR(8) NULL/sql.NullString/text":   "phase 6: sql.Null* dest",
-	"VARCHAR(8) NULL/sql.NullString/binary": "phase 6: sql.Null* dest",
-}
+var knownDiffBugs = map[string]string{}
 
 func TestDiff(t *testing.T) {
 	addr := os.Getenv("GOMYSQL_ADDR")
@@ -106,13 +102,13 @@ func TestDiff(t *testing.T) {
 		for _, newDest := range c.dests {
 			dt := reflect.TypeOf(newDest()).Elem().String()
 			ref := std
-			if _, ok := newDest().(*time.Time); ok {
+			if wantsTime(c.typ, newDest()) {
 				ref = stdTime
 			}
-			want := readStd(t, ref, newDest)
 
 			for _, proto := range []string{"text", "binary"} {
-				name := c.typ + "/" + dt + "/" + proto
+				want, wantErr := readStd(ref, proto, newDest)
+				name := strings.TrimSpace(c.typ) + "/" + dt + "/" + proto
 				t.Run(name, func(t *testing.T) {
 					if reason, ok := knownDiffBugs[name]; ok && os.Getenv("GOMYSQL_KNOWN_BUGS") == "" {
 						t.Skip("known bug, " + reason)
@@ -129,10 +125,10 @@ func TestDiff(t *testing.T) {
 					defer func() { _ = cc.Close() }()
 
 					got, err := readCC(cc, proto, newDest)
-					if err != nil {
-						t.Fatalf("gomysql: %v (want %s)", err, show(want))
+					if (err != nil) != (wantErr != nil) {
+						t.Fatalf("gomysql: %v (want %s, %v)", err, show(want), wantErr)
 					}
-					if !reflect.DeepEqual(got, want) {
+					if err == nil && !reflect.DeepEqual(got, want) {
 						t.Errorf("\n got %s\nwant %s", show(got), show(want))
 					}
 				})
@@ -164,12 +160,32 @@ func mustStd(t *testing.T, db *sql.DB, q string, args ...any) {
 	}
 }
 
-func readStd(t *testing.T, db *sql.DB, newDest func() any) []any {
-	t.Helper()
+// wantsTime reports whether the reference should use parseTime: for
+// time.Time destinations, and for any and sql.Scanner destinations of date
+// columns, which gomysql fills with time.Time.
+func wantsTime(typ string, dest any) bool {
+	switch dest.(type) {
+	case *time.Time, *sql.NullTime, **time.Time:
+		return true
+	case *any:
+		return strings.HasPrefix(typ, "DATE") || strings.HasPrefix(typ, "TIMESTAMP")
+	}
 
-	rows, err := db.Query(diffQuery)
+	return false
+}
+
+// readStd reads the rows through database/sql: in the text protocol, or
+// in the binary one with an argument, which go-sql-driver sends as a
+// prepared statement.
+func readStd(db *sql.DB, proto string, newDest func() any) ([]any, error) {
+	q, args := diffQuery, []any(nil)
+	if proto == "binary" {
+		q, args = "SELECT v FROM diff WHERE ? ORDER BY id", []any{1}
+	}
+
+	rows, err := db.Query(q, args...)
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -177,15 +193,12 @@ func readStd(t *testing.T, db *sql.DB, newDest func() any) []any {
 	for rows.Next() {
 		d := newDest()
 		if err := rows.Scan(d); err != nil {
-			t.Fatalf("go-sql-driver: %v", err)
+			return out, err
 		}
 		out = append(out, deref(d))
 	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
 
-	return out
+	return out, rows.Err()
 }
 
 func readCC(c *gomysql.Conn, proto string, newDest func() any) (out []any, err error) {
@@ -238,6 +251,9 @@ func deref(p any) any {
 	v := reflect.ValueOf(p).Elem().Interface()
 	if b, ok := v.([]byte); ok {
 		return append([]byte{}, b...) // detach from driver buffers
+	}
+	if b, ok := v.(sql.RawBytes); ok {
+		return sql.RawBytes(append([]byte{}, b...))
 	}
 	if tm, ok := v.(time.Time); ok {
 		return tm.UTC()

@@ -17,8 +17,6 @@ const (
 	writerMinCompressSize = 50
 )
 
-const isFewer64bit = uint64(^uint(0)) < ^uint64(0)
-
 const timeFormat string = "2006-01-02 15:04:05.000000"
 
 // https://dev.mysql.com/doc/internals/en/generic-response-packets.html

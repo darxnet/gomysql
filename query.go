@@ -2,7 +2,6 @@ package gomysql
 
 import (
 	"bytes"
-	"database/sql"
 	"errors"
 	"fmt"
 	"reflect"
@@ -12,7 +11,9 @@ import (
 
 const comQuery byte = 0x03
 
-func (conn *Conn) Query(query string, args ...any) (rows *RowsText, err error) {
+// Query runs query, with args interpolated, in the text protocol and
+// returns its rows. A statement without a result set has no rows.
+func (conn *Conn) Query(query string, args ...any) (rows *Rows, err error) {
 	if len(args) > 0 {
 		query, err = encodeQuery(query, args...)
 		if err != nil {
@@ -31,7 +32,7 @@ func (conn *Conn) Query(query string, args ...any) (rows *RowsText, err error) {
 	}
 
 	// A statement without a result set, such as DO 1, has no rows.
-	rows = &RowsText{resultRows{conn: conn, done: n == 0, columns: make([]ColumnDefinition, n)}}
+	rows = &Rows{conn: conn, done: n == 0, columns: make([]ColumnDefinition, n)}
 
 	if err := conn.readColumns(rows.columns); err != nil {
 		return nil, err
@@ -40,23 +41,12 @@ func (conn *Conn) Query(query string, args ...any) (rows *RowsText, err error) {
 	return rows, nil
 }
 
-func (conn *Conn) QueryRow(query string, args ...any) (row *RowText) {
-	row = new(RowText)
+// QueryRow runs query like Query and returns the first row; Row.Scan
+// reads it and closes the rows.
+func (conn *Conn) QueryRow(query string, args ...any) *Row {
+	rows, err := conn.Query(query, args...)
 
-	row.rows, row.err = conn.Query(query, args...)
-	if row.err != nil {
-		return row
-	}
-
-	if !row.rows.Next() {
-		if row.err = row.rows.Err(); row.err != nil {
-			return row
-		}
-		row.err = sql.ErrNoRows
-		return row
-	}
-
-	return row
+	return &Row{rows: rows, err: err}
 }
 
 // Result is the outcome of Exec.

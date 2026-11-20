@@ -31,18 +31,6 @@ var tblSeq atomic.Uint32
 // knownBugs lists subtests that fail on known bugs, with the ROADMAP phase
 // that fixes them. A fix removes its entry, so the test then guards it.
 var knownBugs = map[string]string{
-	"TestConformanceCRUD/crud":                          "phase 6: bool dest",
-	"TestConformanceInt/TINYINT":                        "phase 6: sign of negative ints",
-	"TestConformanceInt/SMALLINT":                       "phase 6: sign of negative ints",
-	"TestConformanceInt/MEDIUMINT":                      "phase 6: sign of negative ints",
-	"TestConformanceInt/INT":                            "phase 6: sign of negative ints",
-	"TestConformanceInt/BIGINT":                         "phase 6: sign of negative ints",
-	"TestConformanceFloat/float":                        "phase 6: float dest",
-	"TestConformanceBytesReuse/reuse":                   "phase 6: []byte dest reuse",
-	"TestConformanceNULL/null":                          "phase 6: NULL",
-	"TestConformanceRawBytesBig/rawbytes":               "phase 6: RawBytes in text protocol",
-	"TestConformanceDateTime/datetime":                  "phase 6: time dest",
-	"TestConformanceStmtArgs/args":                      "phase 6: float dest",
 	"TestConformanceInterpolation/escaped":              "phase 9: interpolation",
 	"TestConformanceInterpolation/question-mark-in-arg": "phase 9: interpolation",
 	"TestConformanceInterpolation/float-precision":      "phase 9: interpolation",
@@ -399,7 +387,8 @@ func TestConformanceBytesReuse(t *testing.T) {
 	})
 }
 
-// TestNULL: a NULL must reset the destination and not shift later columns.
+// TestNULL: NULL as in database/sql: an error for a scalar destination,
+// nil or Valid=false for the others; later columns are not shifted.
 func TestConformanceNULL(t *testing.T) {
 	t.Parallel()
 
@@ -410,27 +399,32 @@ func TestConformanceNULL(t *testing.T) {
 		defer confRecover(t)
 
 		for _, m := range confModes {
-			a, b, s := 7, 7, "stale"
-			if err := scanOne(t, m, c, "SELECT 1, NULL, 3", &a, &b, &a); err != nil {
+			var (
+				a, last int
+				ni      sql.NullInt64
+				ns      sql.NullString
+				p           = new(int)
+				anyV    any = "stale"
+				b           = []byte("stale")
+				raw         = sql.RawBytes("stale")
+			)
+
+			err := scanOne(t, m, c, "SELECT 1, NULL, NULL, NULL, NULL, NULL, NULL, 3", //nolint:dupword // SQL
+				&a, &ni, &ns, &p, &anyV, &b, &raw, &last)
+			if err != nil {
 				t.Errorf("%s: %v", m.name, err)
-			} else if a != 3 {
-				t.Errorf("%s: column after NULL: got %d, want 3", m.name, a)
-			}
-			if b != 7 {
-				t.Logf("%s: NULL changed int dest to %d", m.name, b)
-			} else {
-				t.Logf("%s: NULL leaves dest unchanged (b=%d), unlike database/sql which errors or zeroes", m.name, b)
+			} else if a != 1 || ni.Valid || ns.Valid || p != nil || anyV != nil || b != nil || raw != nil || last != 3 {
+				t.Errorf("%s: got %d %v %v %v %v %q %q %d", m.name, a, ni, ns, p, anyV, b, raw, last)
 			}
 
-			if err := scanOne(t, m, c, "SELECT NULL, 'x'", &s, &s); err != nil {
-				t.Errorf("%s: %v", m.name, err)
-			} else if s != "x" {
-				t.Errorf("%s: string after NULL: got %q, want x", m.name, s)
+			var n int
+			if err := scanOne(t, m, c, "SELECT NULL", &n); err == nil {
+				t.Errorf("%s: NULL into *int: no error", m.name)
 			}
 
-			var ns sql.NullString
-			if err := scanOne(t, m, c, "SELECT NULL", &ns); err != nil {
-				t.Errorf("%s: sql.NullString unsupported: %v", m.name, err)
+			var s string
+			if err := scanOne(t, m, c, "SELECT NULL", &s); err == nil {
+				t.Errorf("%s: NULL into *string: no error", m.name)
 			}
 		}
 	})
@@ -556,7 +550,7 @@ func TestConformanceStmtArgs(t *testing.T) {
 			i int64
 			u uint64
 			s string
-			n = 9
+			n sql.NullInt64
 			f float64
 		)
 		if !rows.Next() {
@@ -567,8 +561,8 @@ func TestConformanceStmtArgs(t *testing.T) {
 		}
 		_ = rows.Close()
 
-		if i != -5 || u != 1<<63 || s != "it's" || f != 1.5 {
-			t.Errorf("got %d %d %q %d %v", i, u, s, n, f)
+		if i != -5 || u != 1<<63 || s != "it's" || n.Valid || f != 1.5 {
+			t.Errorf("got %d %d %q %v %v", i, u, s, n, f)
 		}
 	})
 }

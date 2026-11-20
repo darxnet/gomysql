@@ -68,12 +68,35 @@ func (s *fakeServer) serve(tb testing.TB) {
 			defer s.wg.Done()
 			defer func() { _ = nc.Close() }()
 
-			c := &fakeConn{conn: nc, r: bufio.NewReader(nc), deprecateEOF: s.deprecateEOF}
+			c := &fakeConn{conn: chunkedConn{nc}, r: bufio.NewReader(nc), deprecateEOF: s.deprecateEOF}
 			if err := c.session(s.handle); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 				tb.Errorf("fake server: %v", err)
 			}
 		}()
 	}
+}
+
+// chunkedConn writes in pieces of at most 1 MB: macOS fails single writes
+// of tens of megabytes on loopback with ENOBUFS when memory is short.
+type chunkedConn struct {
+	net.Conn
+}
+
+func (c chunkedConn) Write(p []byte) (int, error) {
+	n := 0
+
+	for len(p) > 0 {
+		m, err := c.Conn.Write(p[:min(len(p), 1<<20)])
+		n += m
+
+		if err != nil {
+			return n, err
+		}
+
+		p = p[m:]
+	}
+
+	return n, nil
 }
 
 type fakeConn struct {
@@ -164,7 +187,7 @@ func rawServer(tb testing.TB, script func(c *fakeConn) error) Config {
 		}
 		defer func() { _ = nc.Close() }()
 
-		if err := script(&fakeConn{conn: nc, r: bufio.NewReader(nc)}); err != nil && !errors.Is(err, io.EOF) {
+		if err := script(&fakeConn{conn: chunkedConn{nc}, r: bufio.NewReader(nc)}); err != nil && !errors.Is(err, io.EOF) {
 			tb.Errorf("raw server: %v", err)
 		}
 	}()
