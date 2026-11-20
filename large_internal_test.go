@@ -47,7 +47,7 @@ func TestLargeResponse(t *testing.T) {
 				return err
 			})
 
-			conn, err := Open(srv.config())
+			conn, err := Connect(srv.config())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -88,7 +88,7 @@ func TestLargeRequest(t *testing.T) {
 				return c.ok()
 			})
 
-			conn, err := Open(srv.config())
+			conn, err := Connect(srv.config())
 			if err != nil {
 				t.Fatal(err)
 			}

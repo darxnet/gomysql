@@ -46,9 +46,9 @@ func TestHandshakeRejectsOldServers(t *testing.T) {
 				return expectClosed(t, c)
 			})
 
-			conn, err := Open(cfg)
+			conn, err := Connect(cfg)
 			if !errors.Is(err, errServerTooOld) || conn != nil {
-				t.Errorf("Open: %v, %v; want nil, %v", conn, err, errServerTooOld)
+				t.Errorf("Connect: %v, %v; want nil, %v", conn, err, errServerTooOld)
 			}
 		})
 	}
@@ -82,9 +82,9 @@ func TestAuthRefusesOldPassword(t *testing.T) {
 				return expectClosed(t, c)
 			})
 
-			conn, err := Open(cfg)
+			conn, err := Connect(cfg)
 			if !errors.Is(err, errOldPassword) || conn != nil {
-				t.Errorf("Open: %v, %v; want nil, %v", conn, err, errOldPassword)
+				t.Errorf("Connect: %v, %v; want nil, %v", conn, err, errOldPassword)
 			}
 		})
 	}
@@ -98,12 +98,12 @@ func TestHandshakeError(t *testing.T) {
 		return c.write(append([]byte{iERR, 0x69, 0x04}, "Host 'x' is blocked"...))
 	})
 
-	_, err := Open(cfg)
+	_, err := Connect(cfg)
 
 	var e *Error
 	if !errors.As(err, &e) || e.Number != 1129 || e.SQLState != [5]byte{} ||
 		err.Error() != "Error 1129: Host 'x' is blocked" {
-		t.Errorf("Open: %#v", err)
+		t.Errorf("Connect: %#v", err)
 	}
 }
 
@@ -148,7 +148,7 @@ func TestHandshakeV10Malformed(t *testing.T) {
 func TestClientCapsFollowServer(t *testing.T) {
 	t.Parallel()
 
-	conn := &Conn{config: Config{Attr: map[string]string{"program_name": "x"}}}
+	conn := &Conn{config: Config{ConnectAttrs: map[string]string{"program_name": "x"}}}
 
 	conn.capFlags = fakeCapabilities
 	if caps, _ := conn.clientCaps(20); caps&(clientConnectAttrs|clientDeprecateEOF) != 0 {

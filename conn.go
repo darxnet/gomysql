@@ -1,7 +1,6 @@
 package gomysql
 
 import (
-	"crypto/tls"
 	"net"
 )
 
@@ -12,7 +11,7 @@ type Conn struct {
 	server       string
 	reader       packetReader
 	wbuf         []byte // reused write buffer
-	lastInsertId uint64
+	lastInsertID uint64
 	rowsAffected uint64
 	id           uint32
 	capFlags     uint32
@@ -21,7 +20,7 @@ type Conn struct {
 }
 
 func (conn *Conn) dial() error {
-	nc, err := net.Dial(conn.config.Protocol, conn.config.Address)
+	nc, err := net.Dial(conn.config.Network, conn.config.Address)
 	if err != nil {
 		return err
 	}
@@ -38,20 +37,10 @@ func (conn *Conn) dial() error {
 	return nil
 }
 
-func (conn *Conn) getTlsConfig() *tls.Config {
-	if conn.config.TlsConfig != nil {
-		return conn.config.TlsConfig
-	}
-
-	return &tls.Config{
-		ServerName: conn.config.Address,
-	}
-}
-
-// Conn (re)establishes the connection: dial, handshake and authentication.
+// Reconnect (re)establishes the connection: dial, handshake and authentication.
 // The previous socket, if any, is closed first. On failure the new socket
 // is closed too.
-func (conn *Conn) Conn() error {
+func (conn *Conn) Reconnect() error {
 	if conn.conn != nil {
 		_ = conn.conn.Close()
 	}
@@ -86,12 +75,12 @@ func (conn *Conn) connect() error {
 	return conn.handshakeAuth(authPluginName, authPluginData)
 }
 
-// Open connects and authenticates. On failure it returns a nil Conn and
+// Connect connects and authenticates. On failure it returns a nil Conn and
 // leaves no socket open.
-func Open(config Config) (*Conn, error) { //nolint:gocritic // hugeParam: once per connection
+func Connect(config Config) (*Conn, error) { //nolint:gocritic // hugeParam: once per connection
 	conn := &Conn{config: config}
 
-	if err := conn.Conn(); err != nil {
+	if err := conn.Reconnect(); err != nil {
 		return nil, err
 	}
 

@@ -83,7 +83,7 @@ func TestExecSkipsTextRows(t *testing.T) {
 			return err
 		})
 
-		conn, err := Open(srv.config())
+		conn, err := Connect(srv.config())
 		if err != nil {
 			t.Fatal(err)
 		}

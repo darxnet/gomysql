@@ -13,8 +13,8 @@ const comStmtClose byte = 0x19
 type Stmt struct {
 	conn    *Conn
 	query   string
-	columns []ColumnDefinition
-	params  []ColumnDefinition
+	columns []columnDefinition
+	params  []columnDefinition
 	id      uint32
 }
 
@@ -42,7 +42,7 @@ func (conn *Conn) Prepare(query string) (*Stmt, error) {
 	case iERR:
 		return nil, conn.processERRPacket(buf)
 	default:
-		return nil, errUnexpectedPacketIdentity(buf[0])
+		return nil, unexpectedPacket(buf[0])
 	}
 
 	// COM_STMT_PREPARE_OK: 0x00, statement id (4), number of columns (2),
@@ -61,8 +61,8 @@ func (conn *Conn) Prepare(query string) (*Stmt, error) {
 		conn:    conn,
 		query:   query,
 		id:      id,
-		columns: make([]ColumnDefinition, columns),
-		params:  make([]ColumnDefinition, params),
+		columns: make([]columnDefinition, columns),
+		params:  make([]columnDefinition, params),
 	}
 
 	if err := conn.readColumns(stmt.params); err != nil {
@@ -162,7 +162,7 @@ func (stmt *Stmt) readColumns(n int) error {
 	}
 
 	if n != len(stmt.columns) {
-		stmt.columns = make([]ColumnDefinition, n)
+		stmt.columns = make([]columnDefinition, n)
 
 		return stmt.conn.readColumns(stmt.columns)
 	}
@@ -229,7 +229,7 @@ func appendParam(types, values []byte, arg any) (newTypes, newValues []byte, err
 	case float64:
 		return append(types, myTypeDouble, 0), le.AppendUint64(values, math.Float64bits(v)), nil
 	default:
-		return types, values, errExecuteUnsupportedArg(reflect.TypeOf(v).Name())
+		return types, values, unsupportedArg(reflect.TypeOf(v).Name())
 	}
 }
 

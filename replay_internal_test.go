@@ -83,7 +83,7 @@ func TestReplayRows(t *testing.T) {
 	t.Parallel()
 
 	for _, deprecateEOF := range []bool{false, true} {
-		conn, err := Open(newReplayServer(t, deprecateEOF).config())
+		conn, err := Connect(newReplayServer(t, deprecateEOF).config())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -128,7 +128,7 @@ func TestReplayRows(t *testing.T) {
 //
 //nolint:paralleltest // AllocsPerRun counts process-wide allocations
 func TestReplayAllocsPerRow(t *testing.T) {
-	conn, err := Open(newReplayServer(t, true).config())
+	conn, err := Connect(newReplayServer(t, true).config())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestReplayAllocsPerRow(t *testing.T) {
 }
 
 func BenchmarkReplayInts(b *testing.B) {
-	conn, err := Open(newReplayServer(b, true).config())
+	conn, err := Connect(newReplayServer(b, true).config())
 	if err != nil {
 		b.Fatal(err)
 	}

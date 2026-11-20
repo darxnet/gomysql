@@ -62,14 +62,14 @@ func (w *wrapped) Unwrap() error { return w.err }
 func malformed(msg string) error { return &wrapped{ErrBadConn, "malformed packet: " + msg} }
 func outOfSync(msg string) error { return &wrapped{ErrBadConn, "commands out of sync: " + msg} }
 
-func errUnexpectedPacketIdentity(b byte) error {
+func unexpectedPacket(b byte) error {
 	return outOfSync(fmt.Sprintf("unexpected packet type %#02x", b))
 }
 
-func errPacketSequenceMismatch(expected, received byte) error {
+func badSequence(expected, received byte) error {
 	return outOfSync(fmt.Sprintf("sequence id %d, expected %d", received, expected))
 }
 
-func errExecuteUnsupportedArg(argType string) error {
+func unsupportedArg(argType string) error {
 	return errors.New("gomysql: unsupported argument type " + argType)
 }

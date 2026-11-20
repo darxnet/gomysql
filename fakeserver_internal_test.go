@@ -13,7 +13,7 @@ import (
 // fakeServer speaks enough of the server side of the protocol to test the
 // client without MySQL: a v10 handshake that accepts any password, then each
 // command goes to handle. It listens on loopback TCP, so tests use the public
-// Open.
+// Connect.
 type fakeServer struct {
 	ln     net.Listener
 	handle fakeHandler
@@ -48,7 +48,7 @@ func newFakeServer(tb testing.TB, deprecateEOF bool, handle fakeHandler) *fakeSe
 }
 
 func (s *fakeServer) config() Config {
-	return Config{Protocol: "tcp", Address: s.ln.Addr().String(), User: "u", Password: "p", DbName: "db"}
+	return Config{Network: "tcp", Address: s.ln.Addr().String(), User: "u", Password: "p", Database: "db"}
 }
 
 func (s *fakeServer) serve(tb testing.TB) {
@@ -156,7 +156,7 @@ func handshakeV10(caps uint32, plugin string) []byte {
 	hs = append(hs, "abcdefgh"...)                              // auth-plugin-data-part-1
 	hs = append(hs, 0)                                          // filler
 	hs = binary.LittleEndian.AppendUint16(hs, uint16(caps))     //nolint:gosec // capability flags, lower
-	hs = append(hs, CharSet_utf8mb4_bin)                        // character set
+	hs = append(hs, 46)                                         // character set
 	hs = binary.LittleEndian.AppendUint16(hs, 2)                // status: autocommit
 	hs = binary.LittleEndian.AppendUint16(hs, uint16(caps>>16)) // capability flags, upper
 	hs = append(hs, 21)                                         // auth-plugin-data length
@@ -197,7 +197,7 @@ func rawServer(tb testing.TB, script func(c *fakeConn) error) Config {
 		<-done
 	})
 
-	return Config{Protocol: "tcp", Address: ln.Addr().String(), User: "u", Password: "p", DbName: "db"}
+	return Config{Network: "tcp", Address: ln.Addr().String(), User: "u", Password: "p", Database: "db"}
 }
 
 // read returns the next payload, joining packets split at 16 MB; it is

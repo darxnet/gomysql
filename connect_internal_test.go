@@ -11,18 +11,18 @@ func noCommands(c *fakeConn, _ byte, _ []byte) error {
 	return c.errPacket(1047, "08S01", "unknown command")
 }
 
-// TestOpenMemory guards the per-connection buffers: the write buffer used to
-// be 16 MB, allocated on every Open.
+// TestConnectMemory guards the per-connection buffers: the write buffer used to
+// be 16 MB, allocated on every Connect.
 //
 //nolint:paralleltest // MemStats counts process-wide allocations
-func TestOpenMemory(t *testing.T) {
+func TestConnectMemory(t *testing.T) {
 	srv := newFakeServer(t, true, noCommands)
 
 	var before, after runtime.MemStats
 
 	runtime.ReadMemStats(&before)
 
-	conn, err := Open(srv.config())
+	conn, err := Connect(srv.config())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,14 +33,14 @@ func TestOpenMemory(t *testing.T) {
 
 	const limit = 256 << 10
 	if n := after.TotalAlloc - before.TotalAlloc; n > limit {
-		t.Errorf("Open allocated %d bytes, want at most %d", n, limit)
+		t.Errorf("Connect allocated %d bytes, want at most %d", n, limit)
 	}
 }
 
 func TestCloseHealthy(t *testing.T) {
 	t.Parallel()
 
-	conn, err := Open(newFakeServer(t, true, noCommands).config())
+	conn, err := Connect(newFakeServer(t, true, noCommands).config())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,14 +57,14 @@ func TestReconnectClosesOldSocket(t *testing.T) {
 
 	srv := newFakeServer(t, true, noCommands)
 
-	conn, err := Open(srv.config())
+	conn, err := Connect(srv.config())
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	old := conn.conn
 
-	if err := conn.Conn(); err != nil {
+	if err := conn.Reconnect(); err != nil {
 		t.Fatal(err)
 	}
 

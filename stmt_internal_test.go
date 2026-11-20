@@ -125,7 +125,7 @@ var eofModes = map[string]bool{"EOF": false, "deprecate EOF": true}
 func openResultConn(t *testing.T, deprecateEOF bool) *Conn {
 	t.Helper()
 
-	conn, err := Open(newResultServer(t, deprecateEOF).config())
+	conn, err := Connect(newResultServer(t, deprecateEOF).config())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +317,7 @@ func TestErrorInLaterResult(t *testing.T) {
 func TestFewerColumnDefinitions(t *testing.T) {
 	t.Parallel()
 
-	conn, err := Open(newResultServer(t, false).config())
+	conn, err := Connect(newResultServer(t, false).config())
 	if err != nil {
 		t.Fatal(err)
 	}

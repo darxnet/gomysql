@@ -115,9 +115,9 @@ func TestDiff(t *testing.T) {
 					}
 
 					// A fresh connection: a failed Scan leaves the old one out of sync.
-					cc, err := gomysql.Open(gomysql.Config{
-						Protocol: "tcp", Address: addr, User: "b", Password: "b",
-						DbName: "gomysql", Charset: gomysql.CharSet_utf8mb4_bin,
+					cc, err := gomysql.Connect(gomysql.Config{
+						Network: "tcp", Address: addr, User: "b", Password: "b",
+						Database: "gomysql", Collation: "utf8mb4_bin",
 					})
 					if err != nil {
 						t.Fatal(err)

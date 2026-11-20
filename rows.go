@@ -13,7 +13,7 @@ import (
 // for the next command.
 type Rows struct {
 	conn    *Conn
-	columns []ColumnDefinition
+	columns []columnDefinition
 	buf     []byte // the current row
 	err     error
 	done    bool // the rows are read up to the end, or failed
