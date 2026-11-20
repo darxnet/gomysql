@@ -9,7 +9,7 @@ import (
 
 type namedBase struct {
 	ID   int64
-	Note string `db:"note"`
+	Note string `db:"note,omitempty"`
 }
 
 type namedUser struct {

@@ -240,8 +240,8 @@ func (b *binder) done(query string, backslash bool) error {
 var fieldCache sync.Map // reflect.Type to map[string][]int
 
 // structFields maps the names of the fields of t, through embedded
-// structs, to their index: the db tag, or the name of the field; db:"-"
-// skips a field. Shallower fields hide deeper ones, as in encoding/json.
+// structs, to their index: the db tag without options after a comma, or
+// the name of the field; db:"-" skips a field. Shallower fields hide deeper ones, as in encoding/json.
 func structFields(t reflect.Type) map[string][]int {
 	if f, ok := fieldCache.Load(t); ok {
 		return f.(map[string][]int) //nolint:forcetypeassert // only maps are stored
@@ -257,6 +257,8 @@ func structFields(t reflect.Type) map[string][]int {
 			f := t.Field(i)
 
 			tag, tagged := f.Tag.Lookup("db")
+			tag, _, _ = strings.Cut(tag, ",") // options, as in sqlx and pgx
+
 			if tag == "-" {
 				continue
 			}
