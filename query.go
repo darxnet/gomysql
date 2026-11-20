@@ -1,23 +1,24 @@
 package gomysql
 
-import (
-	"bytes"
-	"errors"
-	"fmt"
-	"reflect"
-	"strings"
-	"time"
-)
-
 const comQuery byte = 0x03
 
-// Query runs query, with args interpolated, in the text protocol and
-// returns its rows. A statement without a result set has no rows.
+// Query runs query in the text protocol and returns its rows. A statement
+// without a result set has no rows.
+//
+// The placeholders ? of query are replaced by args as SQL literals, on the
+// client: a ? in a string, a quoted identifier or a comment is not a
+// placeholder, as for the server in a prepared statement. Arguments are
+// converted as in database/sql: a driver.Valuer gives its value, a
+// pointer what it points to (nil is NULL), a type based on a basic type
+// that type; time.Time is written in Config.Location. Strings are escaped
+// for NO_BACKSLASH_ESCAPES when the server reports it; collations whose
+// multibyte characters can contain a backslash (big5, cp932, gbk, gb18030,
+// sjis) cannot have string arguments: use Prepare.
 func (conn *Conn) Query(query string, args ...any) (*Rows, error) {
 	if len(args) > 0 {
 		var err error
 
-		query, err = encodeQuery(conn.config.Location, query, args...)
+		query, err = conn.interpolate(query, args)
 		if err != nil {
 			return nil, err
 		}
@@ -67,13 +68,13 @@ func (r *Result) RowsAffected() (int64, error) {
 	return int64(r.rowsAffected), nil //nolint:gosec // G115: database/sql's Result uses int64
 }
 
-// Exec runs query, with args interpolated, and returns its result. Rows it
-// returns are skipped.
+// Exec runs query, with args interpolated as by Query, and returns its
+// result. Rows it returns are skipped.
 func (conn *Conn) Exec(query string, args ...any) (*Result, error) {
 	if len(args) > 0 {
 		var err error
 
-		query, err = encodeQuery(conn.config.Location, query, args...)
+		query, err = conn.interpolate(query, args)
 		if err != nil {
 			return nil, err
 		}
@@ -101,93 +102,4 @@ func (conn *Conn) readResult() (*Result, error) {
 	}
 
 	return result, nil
-}
-
-func encodeQuery(loc *time.Location, query string, args ...any) (s string, err error) {
-	if strings.Count(query, "?") != len(args) {
-		return "", errors.New("wrong args count")
-	}
-
-	s = query
-	for i := range args {
-		switch a := args[i].(type) {
-		case nil:
-			s = strings.Replace(s, "?", "NULL", 1)
-			continue
-		case string:
-			s = strings.Replace(s, "?", quoteString(encodeQueryString(a)), 1)
-			continue
-		case []byte:
-			s = strings.Replace(s, "?", quoteString(encodeQueryString(string(a))), 1)
-			continue
-		case time.Time:
-			s = strings.Replace(s, "?", quoteString(inLocation(a, loc).Format(timeFormat)), 1)
-			continue
-		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
-			s = strings.Replace(s, "?", fmt.Sprintf("%d", a), 1)
-			continue
-		case float32, float64:
-			s = strings.Replace(s, "?", fmt.Sprintf("%f", a), 1)
-			continue
-		}
-
-		if v, ok := args[i].(fmt.Stringer); ok {
-			s = strings.Replace(s, "?", encodeQueryString(v.String()), 1)
-			continue
-		}
-
-		refArg := reflect.ValueOf(args[i])
-
-		if refArg.Kind() == reflect.Pointer {
-			refArg = reflect.Indirect(refArg)
-		}
-
-		dest := ""
-		refDest := reflect.ValueOf(&dest).Elem()
-		if refArg.Type().ConvertibleTo(refDest.Type()) {
-			refDest.Set(refArg.Convert(refDest.Type()))
-			s = strings.Replace(s, "?", dest, 1)
-			continue
-		}
-
-		return "", errors.New("non basic type in query args dont implement fmt.Stringer interface")
-	}
-
-	return s, err
-}
-
-func encodeQueryString(s string) string {
-	// https://dev.mysql.com/doc/refman/5.7/en/string-literals.html
-	buf := bytes.NewBuffer(nil)
-	buf.WriteByte('\'')
-	for i := range len(s) {
-		switch s[i] {
-		case 0:
-			buf.WriteString(`\0`)
-		case '\'':
-			buf.WriteString(`\'`)
-		case '"':
-			buf.WriteString(`\"`)
-		case '\b':
-			buf.WriteString(`\b`)
-		case '\n':
-			buf.WriteString(`\n`)
-		case '\r':
-			buf.WriteString(`\r`)
-		case '\t':
-			buf.WriteString(`\t`)
-		case 26:
-			buf.WriteString(`\Z`)
-		case '\\':
-			buf.WriteString(`\\`)
-		default:
-			buf.WriteByte(s[i])
-		}
-	}
-	buf.WriteByte('\'')
-	return buf.String()
-}
-
-func quoteString(s string) string {
-	return "`" + s + "`"
 }

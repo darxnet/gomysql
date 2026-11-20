@@ -443,7 +443,7 @@ func TestArgsLocation(t *testing.T) {
 
 	// Text.
 	for loc, want := range map[*time.Location]string{nil: "13:31:33", kyiv: "15:31:33"} {
-		q, err := encodeQuery(loc, "SELECT ?", arg)
+		q, err := (&Conn{config: Config{Location: loc}}).interpolate("SELECT ?", []any{arg})
 		if err != nil || !strings.Contains(q, "2026-11-18 "+want) {
 			t.Errorf("text in %v: %q, %v; want %s", loc, q, err, want)
 		}
