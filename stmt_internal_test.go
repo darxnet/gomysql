@@ -61,8 +61,11 @@ func newResultServer(t *testing.T, deprecateEOF bool) *fakeServer {
 		var out []byte
 
 		switch cmd {
-		case comPing:
+		case comPing, comInitDB:
 			return c.ok()
+
+		case comStatistics:
+			out = c.frame(nil, []byte("Uptime: 5"))
 
 		case comStmtPrepare:
 			// The statement id is the first byte of the query. The column
@@ -102,6 +105,10 @@ func newResultServer(t *testing.T, deprecateEOF bool) *fakeServer {
 				out = c.frame(nil, []byte{2})
 				out = c.frame(out, colString[0].definition())
 				out = c.eofWith(out, 0)
+			case "START TRANSACTION", "COMMIT", "ROLLBACK":
+				out = c.okWith(nil, 0, 0, 0)
+			case "rows":
+				out = c.eofWith(c.resultSet(nil, colString, []byte{1, 'x'}), 0)
 			case "rows then ok":
 				out = c.eofWith(c.resultSet(nil, colString, []byte{1, 'x'}), serverStatusMoreResultsExists)
 				out = c.okWith(out, 0, 0, 0)

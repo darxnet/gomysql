@@ -29,6 +29,7 @@ type value struct {
 	i    uint64 // kindInt as int64 bits, kindUint
 	f    float64
 	t    dateTime
+	loc  *time.Location // of DATE, DATETIME and TIMESTAMP values
 	kind valueKind
 	f32  bool // a FLOAT column
 }
@@ -217,14 +218,28 @@ func (t *dateTime) appendText(dst []byte, col *columnDefinition) []byte {
 	return appendFraction(dst, t.micro, col.Decimals)
 }
 
-// time returns t in UTC; the zero date is the zero time.Time.
-func (t *dateTime) time() time.Time {
+// inLocation returns t in loc, UTC if nil: time.Time arguments are sent
+// as the wall clock in Config.Location.
+func inLocation(t time.Time, loc *time.Location) time.Time {
+	if loc == nil {
+		loc = time.UTC
+	}
+
+	return t.In(loc)
+}
+
+// time returns t in loc; the zero date is the zero time.Time.
+func (t *dateTime) time(loc *time.Location) time.Time {
 	if t.year == 0 && t.month == 0 && t.day == 0 {
 		return time.Time{}
 	}
 
+	if loc == nil {
+		loc = time.UTC
+	}
+
 	return time.Date(int(t.year), time.Month(t.month), int(t.day),
-		int(t.hour), int(t.minute), int(t.second), int(t.micro)*1000, time.UTC)
+		int(t.hour), int(t.minute), int(t.second), int(t.micro)*1000, loc)
 }
 
 // parseDateTime parses a text DATE, DATETIME or TIMESTAMP:
@@ -311,6 +326,21 @@ func appendFraction(dst []byte, micro uint32, decimals byte) []byte {
 	dst = append(dst, '.')
 
 	return append(dst, digits[:decimals]...)
+}
+
+// isText reports whether col holds text: JSON, which MySQL sends with the
+// binary collation but is always utf8mb4, or a string type with a
+// collation other than binary.
+func isText(col *columnDefinition) bool {
+	switch col.Type {
+	case myTypeJSON:
+		return true
+	case myTypeVarChar, myTypeVarString, myTypeString, myTypeEnum, myTypeSet,
+		myTypeTinyBlob, myTypeMediumBlob, myTypeLongBlob, myTypeBlob:
+		return col.Collation != collationBinary
+	}
+
+	return false
 }
 
 // isDateTime reports whether col holds DATE, DATETIME or TIMESTAMP values.

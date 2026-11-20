@@ -3,11 +3,13 @@ package gomysql
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"reflect"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -27,6 +29,10 @@ func scanError(i int, col *columnDefinition, dest any, err error) error {
 //
 //nolint:gocyclo,cyclop // one case per destination type
 func assign(dest any, v *value, col *columnDefinition) error {
+	if col.Type == myTypeBit && v.kind == kindBytes {
+		v.bitToUint(dest)
+	}
+
 	switch d := dest.(type) {
 	case *string:
 		switch v.kind {
@@ -87,6 +93,17 @@ func assign(dest any, v *value, col *columnDefinition) error {
 		}
 
 		*d = float32(f)
+	case *time.Duration:
+		return setDuration(d, v, col)
+	case *sql.Null[time.Duration]: // its Scan cannot parse TIME
+		*d = sql.Null[time.Duration]{}
+		if v.kind == kindNull {
+			return nil
+		}
+
+		d.Valid = true
+
+		return setDuration(&d.V, v, col)
 	case *time.Time:
 		t, err := v.time(col)
 		if err != nil {
@@ -112,6 +129,18 @@ func assignReflect(dest any, v *value, col *columnDefinition) error {
 	}
 
 	e := rv.Elem()
+
+	if isJSONDest(e.Type(), col) {
+		if v.kind == kindNull {
+			return errScanNull
+		}
+
+		if err := json.Unmarshal(v.b, dest); err != nil {
+			return fmt.Errorf("%w: %w", errScanSyntax, err)
+		}
+
+		return nil
+	}
 
 	// The other kinds are unsupported.
 	//
@@ -186,6 +215,21 @@ func assignReflect(dest any, v *value, col *columnDefinition) error {
 	return nil
 }
 
+// isJSONDest reports whether a destination of type t is filled by
+// json.Unmarshal: a struct, map, array or slice other than bytes, for JSON
+// and text columns. MariaDB sends JSON as LONGTEXT.
+func isJSONDest(t reflect.Type, col *columnDefinition) bool {
+	//exhaustive:ignore
+	switch t.Kind() {
+	case reflect.Struct, reflect.Map:
+		return isText(col)
+	case reflect.Array, reflect.Slice:
+		return t.Elem().Kind() != reflect.Uint8 && isText(col)
+	}
+
+	return false
+}
+
 type signed interface {
 	~int | ~int8 | ~int16 | ~int32 | ~int64
 }
@@ -222,6 +266,92 @@ func setUnsigned[T unsigned](d *T, v *value) error {
 	*d = T(n)
 
 	return nil
+}
+
+// bitToUint makes a BIT value, big-endian bytes of up to 64 bits, an
+// unsigned integer, but for strings and bytes, which get the bytes as the
+// server sends them.
+func (v *value) bitToUint(dest any) {
+	switch dest.(type) {
+	case *string, *[]byte, *sql.RawBytes:
+		return
+	}
+
+	if len(v.b) > 8 {
+		return
+	}
+
+	var u uint64
+	for _, c := range v.b {
+		u = u<<8 | uint64(c)
+	}
+
+	v.kind, v.i = kindUint, u
+}
+
+// setDuration parses a TIME value; other values are nanoseconds, as
+// database/sql converts them.
+func setDuration(d *time.Duration, v *value, col *columnDefinition) error {
+	if v.kind != kindBytes || col.Type != myTypeTime && col.Type != myTypeTime2 {
+		return setSigned(d, v)
+	}
+
+	t, ok := parseDuration(v.b)
+	if !ok {
+		return errScanSyntax
+	}
+
+	*d = t
+
+	return nil
+}
+
+// parseDuration parses a TIME value: [-]H+:MM:SS[.fraction].
+func parseDuration(b []byte) (time.Duration, bool) {
+	negative := len(b) > 0 && b[0] == '-'
+	if negative {
+		b = b[1:]
+	}
+
+	hours, rest, ok := strings.Cut(string(b), ":")
+	if !ok || len(rest) < 5 || rest[2] != ':' {
+		return 0, false
+	}
+
+	clock, frac, hasFrac := strings.Cut(rest[3:], ".")
+	if len(clock) != 2 || hasFrac && (frac == "" || len(frac) > 6) {
+		return 0, false
+	}
+
+	h, err1 := parseUint64([]byte(hours))
+	m, err2 := parseUint64([]byte(rest[:2]))
+	s, err3 := parseUint64([]byte(clock))
+
+	if err1 != nil || err2 != nil || err3 != nil || len(hours) > 4 || m > 59 || s > 59 {
+		return 0, false
+	}
+
+	//nolint:gosec // G115: h < 10000, m and s < 60
+	t := time.Duration(h)*time.Hour + time.Duration(m)*time.Minute + time.Duration(s)*time.Second
+
+	if hasFrac {
+		micro, err := parseUint64([]byte(frac))
+		if err != nil {
+			return 0, false
+		}
+
+		for range 6 - len(frac) {
+			micro *= 10
+		}
+
+		t += time.Duration(micro) * time.Microsecond //nolint:gosec // G115: < 1e6
+	}
+
+	if negative {
+		t = -t
+	}
+
+	return t, true
 }
 
 // setBool accepts 0 and 1, and the strings of strconv.ParseBool.
@@ -336,10 +466,10 @@ func (v *value) float(bits int) (float64, error) {
 func (v *value) time(col *columnDefinition) (time.Time, error) {
 	switch v.kind {
 	case kindTime:
-		return v.t.time(), nil
+		return v.t.time(v.loc), nil
 	case kindBytes:
 		if t, ok := parseDateTime(v.b); ok && isDateTime(col) {
-			return t.time(), nil
+			return t.time(v.loc), nil
 		}
 
 		return time.Time{}, errScanConvert
@@ -385,21 +515,21 @@ func (v *value) appendText(dst []byte, col *columnDefinition) []byte {
 	}
 }
 
-// driverValue is what go-sql-driver with parseTime passes to an
-// sql.Scanner or stores into an any: nil, int64, float32 for FLOAT,
-// float64, []byte, or time.Time for DATE, DATETIME and TIMESTAMP. In the
-// binary protocol unsigned integers above MaxInt64 are []byte; in the text
-// one BIGINT UNSIGNED is uint64.
+// driverValue is what an sql.Scanner gets and an any holds, the same in
+// both protocols: nil; int64 for integers but BIGINT UNSIGNED and BIT,
+// which are uint64; float32 for FLOAT; float64 for DOUBLE; time.Time for
+// DATE, DATETIME and TIMESTAMP; json.RawMessage for JSON; string for text;
+// and a copy of the bytes for binary strings, DECIMAL, TIME and the rest.
 func (v *value) driverValue(col *columnDefinition) any {
 	switch v.kind {
 	case kindInt:
 		return int64(v.i) //nolint:gosec // G115: int64 bits
 	case kindUint:
-		if v.i > math.MaxInt64 {
-			return strconv.AppendUint(nil, v.i, 10)
+		if col.Type == myTypeLongLong || col.Type == myTypeBit {
+			return v.i
 		}
 
-		return int64(v.i)
+		return int64(v.i) //nolint:gosec // G115: below 1<<32
 	case kindFloat:
 		if v.f32 {
 			return float32(v.f)
@@ -407,18 +537,19 @@ func (v *value) driverValue(col *columnDefinition) any {
 
 		return v.f
 	case kindTime:
-		return v.t.time()
+		return v.t.time(v.loc)
 	case kindBytes:
-		return textDriverValue(v.b, col)
+		return v.textDriverValue(col)
 	default:
 		return nil
 	}
 }
 
-// textDriverValue converts a text value as go-sql-driver does: integer
-// columns to int64, BIGINT UNSIGNED to uint64, FLOAT to float32, DOUBLE to
-// float64, dates to time.Time, the rest to a copy of the bytes.
-func textDriverValue(b []byte, col *columnDefinition) any {
+// textDriverValue is driverValue of a value sent as text: in the text
+// protocol, all of them.
+func (v *value) textDriverValue(col *columnDefinition) any {
+	b := v.b
+
 	switch col.Type {
 	case myTypeLongLong:
 		if col.Flags&flagUnsigned != 0 {
@@ -445,8 +576,16 @@ func textDriverValue(b []byte, col *columnDefinition) any {
 	default:
 		if isDateTime(col) {
 			if t, ok := parseDateTime(b); ok {
-				return t.time()
+				return t.time(v.loc)
 			}
+		}
+
+		if col.Type == myTypeJSON {
+			return json.RawMessage(bytes.Clone(b))
+		}
+
+		if isText(col) {
+			return string(b)
 		}
 	}
 

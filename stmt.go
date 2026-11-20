@@ -96,7 +96,15 @@ func (stmt *Stmt) Query(args ...any) (*Rows, error) {
 		return nil, err
 	}
 
-	return &Rows{conn: stmt.conn, done: n == 0, columns: stmt.columns, binary: true}, nil
+	return &Rows{conn: stmt.conn, done: n == 0, columns: stmt.columns, loc: stmt.conn.config.Location, binary: true}, nil
+}
+
+// QueryRow executes the prepared statement like Query and returns the
+// first row; Row.Scan reads it and closes the rows.
+func (stmt *Stmt) QueryRow(args ...any) *Row {
+	rows, err := stmt.Query(args...)
+
+	return &Row{rows: rows, err: err}
 }
 
 // Exec executes the prepared statement with args and returns its result.
@@ -139,7 +147,7 @@ func (stmt *Stmt) execute(args []any) error {
 
 			var err error
 
-			types, values, err = appendParam(types, values, arg)
+			types, values, err = appendParam(types, values, arg, stmt.conn.config.Location)
 			if err != nil {
 				return err
 			}
@@ -185,7 +193,7 @@ const unsignedParam byte = 0x80
 
 // appendParam appends the type (type byte, unsigned flag) and the binary
 // value of arg.
-func appendParam(types, values []byte, arg any) (newTypes, newValues []byte, err error) {
+func appendParam(types, values []byte, arg any, loc *time.Location) (newTypes, newValues []byte, err error) {
 	le := binary.LittleEndian
 
 	switch v := arg.(type) {
@@ -196,7 +204,7 @@ func appendParam(types, values []byte, arg any) (newTypes, newValues []byte, err
 	case []byte:
 		return append(types, myTypeString, 0), appendLenEncBytes(values, v), nil
 	case time.Time:
-		return append(types, myTypeDatetime, 0), appendDatetime(values, v), nil
+		return append(types, myTypeDatetime, 0), appendDatetime(values, inLocation(v, loc)), nil
 	case bool:
 		b := byte(0)
 		if v {

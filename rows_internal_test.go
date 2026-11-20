@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -80,6 +82,9 @@ var (
 	dateTime3   = append([]byte{11}, append(le16(2026), 11, 18, 13, 31, 33, 0xc0, 0xd4, 0x01, 0x00)...)
 )
 
+// anyOf wants v scanned into an any, not into a value of v's type.
+type anyOf struct{ v any }
+
 // scanCase scans one cell into a new destination of want's type and
 // expects want, or an error if want is an error.
 type scanCase struct {
@@ -94,10 +99,13 @@ func runScanCases(t *testing.T, rowsFor func(c cell) *Rows, cases []scanCase) {
 	for i := range cases {
 		c := &cases[i]
 		e, isErr := c.want.(errDest)
+		want := c.want
 
 		var dest reflect.Value
 
-		switch {
+		switch a, isAny := c.want.(anyOf); {
+		case isAny:
+			dest, want = reflect.New(reflect.TypeFor[any]()), a.v
 		case isErr:
 			dest = reflect.New(reflect.TypeOf(e.dest))
 		case c.want == nil:
@@ -113,8 +121,8 @@ func runScanCases(t *testing.T, rowsFor func(c cell) *Rows, cases []scanCase) {
 			t.Errorf("%s: %v, want %v", c.name, err, e.err)
 		case !isErr && err != nil:
 			t.Errorf("%s: %v", c.name, err)
-		case !isErr && !reflect.DeepEqual(dest.Elem().Interface(), c.want):
-			t.Errorf("%s: %#v, want %#v", c.name, dest.Elem().Interface(), c.want)
+		case !isErr && !reflect.DeepEqual(dest.Elem().Interface(), want):
+			t.Errorf("%s: %#v, want %#v", c.name, dest.Elem().Interface(), want)
 		}
 	}
 }
@@ -134,6 +142,10 @@ func TestScanBinary(t *testing.T) {
 	utiny := col(myTypeTiny, unsignedFlag, 0)
 	ubig := col(myTypeLongLong, unsignedFlag, 0)
 	str := col(myTypeVarString, 0, 0)
+	bin := columnDefinition{Name: []byte("c"), Type: myTypeVarString, Collation: collationBinary}
+	minus26 := -(26*time.Hour + 3*time.Minute + 4500*time.Millisecond)
+	jsonCol := columnDefinition{Name: []byte("c"), Type: myTypeJSON, Collation: collationBinary}
+	bit := columnDefinition{Name: []byte("c"), Type: myTypeBit, Collation: collationBinary}
 	dt3 := col(myTypeDatetime, 0, 3)
 	tm1 := col(myTypeTime, 0, 1)
 	null := cell{col(myTypeLong, 0, 0), nil}
@@ -142,7 +154,7 @@ func TestScanBinary(t *testing.T) {
 	runScanCases(t, func(c cell) *Rows { return binaryRows(c) }, []scanCase{
 		{"tiny -1 int64", cell{tiny, []byte{0xff}}, int64(-1)},
 		{"tiny -1 int8", cell{tiny, []byte{0xff}}, int8(-1)},
-		{"tiny -1 any", cell{tiny, []byte{0xff}}, any(int64(-1))},
+		{"tiny -1 any", cell{tiny, []byte{0xff}}, anyOf{int64(-1)}},
 		{"tiny -1 string", cell{tiny, []byte{0xff}}, "-1"},
 		{"tiny -1 uint64", cell{tiny, []byte{0xff}}, fail(errScanRange, uint64(0))},
 		{"tiny -1 bool", cell{tiny, []byte{0xff}}, fail(errScanRange, false)},
@@ -154,16 +166,46 @@ func TestScanBinary(t *testing.T) {
 		{"long named", cell{col(myTypeLong, 0, 0), le32(7)}, testInt(7)},
 		{"ubig max uint64", cell{ubig, le64(math.MaxUint64)}, uint64(math.MaxUint64)},
 		{"ubig max int64", cell{ubig, le64(math.MaxUint64)}, fail(errScanRange, int64(0))},
-		{"ubig max any", cell{ubig, le64(math.MaxUint64)}, any([]byte("18446744073709551615"))},
+		{"ubig max any", cell{ubig, le64(math.MaxUint64)}, anyOf{uint64(math.MaxUint64)}},
+		{"ubig 5 any", cell{ubig, le64(5)}, anyOf{uint64(5)}},
+		{"uint 5 any", cell{col(myTypeLong, flagUnsigned, 0), le32(5)}, anyOf{int64(5)}},
+		{"string any", cell{str, []byte{3, 'a', 'b', 'c'}}, anyOf{"abc"}},
+		{"binary string any", cell{bin, []byte{3, 'a', 'b', 'c'}}, anyOf{[]byte("abc")}},
+		{"bit uint64", cell{bit, []byte{2, 1, 2}}, uint64(258)},
+		{"bit NullUint64", cell{bit, []byte{2, 1, 2}}, sql.Null[uint64]{V: 258, Valid: true}},
+		{"bit uint8", cell{bit, []byte{2, 1, 2}}, fail(errScanRange, uint8(0))},
+		{"bit bytes", cell{bit, []byte{2, 1, 2}}, []byte{1, 2}},
+		{"bit any", cell{bit, []byte{2, 1, 2}}, anyOf{uint64(258)}},
+		{"bit string", cell{bit, []byte{2, 1, 2}}, "\x01\x02"},
+		{"bit NullInt64", cell{bit, []byte{2, 1, 2}}, sql.NullInt64{Int64: 258, Valid: true}},
+		{"bit(1) NullBool", cell{bit, []byte{1, 1}}, sql.NullBool{Bool: true, Valid: true}},
+		{"bit(1) Null[bool]", cell{bit, []byte{1, 0}}, sql.Null[bool]{V: false, Valid: true}},
+		{"bit(64) max", cell{bit, append([]byte{8}, bytes.Repeat([]byte{0xff}, 8)...)}, uint64(math.MaxUint64)},
+		{"json any", cell{jsonCol, []byte{7, '{', '"', 'a', '"', ':', '1', '}'}}, anyOf{json.RawMessage(`{"a":1}`)}},
+		{"json struct", cell{jsonCol, []byte{7, '{', '"', 'a', '"', ':', '1', '}'}}, struct{ A int }{1}},
+		{"json map", cell{jsonCol, []byte{7, '{', '"', 'a', '"', ':', '1', '}'}}, map[string]int{"a": 1}},
+		{"json RawMessage", cell{jsonCol, []byte{7, '{', '"', 'a', '"', ':', '1', '}'}}, json.RawMessage(`{"a":1}`)},
+		{"json *struct", cell{jsonCol, []byte{7, '{', '"', 'a', '"', ':', '1', '}'}}, &struct{ A int }{1}},
+		{"json bad", cell{jsonCol, []byte{1, '{'}}, fail(errScanSyntax, struct{ A int }{})},
+		{"text slice", cell{str, []byte{5, '[', '1', ',', '2', ']'}}, []int{1, 2}},
+		{"binary struct", cell{bin, []byte{2, '{', '}'}}, fail(errScanUnsupported, struct{}{})},
+		{"null struct", cell{columnDefinition{Type: myTypeJSON}, nil}, fail(errScanNull, struct{}{})},
+		{"null *struct", cell{columnDefinition{Type: myTypeJSON}, nil}, (*struct{})(nil)},
+		{"bit(1) bool", cell{bit, []byte{1, 1}}, true},
+		{"time duration", cell{tm1, timeMinus26}, minus26},
+		{"time zero duration", cell{col(myTypeTime, 0, 0), []byte{0}}, time.Duration(0)},
+		{"time NullDuration", cell{tm1, timeMinus26}, sql.Null[time.Duration]{V: minus26, Valid: true}},
+		{"null NullDuration", null, sql.Null[time.Duration]{}},
+		{"null NullUint64", null, sql.Null[uint64]{}},
 		{"ubig 5 uint32", cell{ubig, le64(5)}, uint32(5)},
 		{"float", cell{col(myTypeFloat, 0, 0), le32(math.Float32bits(3.25))}, float32(3.25)},
-		{"float any", cell{col(myTypeFloat, 0, 0), le32(math.Float32bits(3.25))}, any(float32(3.25))},
+		{"float any", cell{col(myTypeFloat, 0, 0), le32(math.Float32bits(3.25))}, anyOf{float32(3.25)}},
 		{"float string", cell{col(myTypeFloat, 0, 0), le32(math.Float32bits(0.1))}, "0.1"},
 		{"float int", cell{col(myTypeFloat, 0, 0), le32(math.Float32bits(3.25))}, fail(errScanRange, int64(0))},
 		{"double 2 int", cell{col(myTypeDouble, 0, 0), le64(math.Float64bits(2))}, int64(2)},
 		{"datetime(3) string", cell{dt3, dateTime3}, "2026-11-18 13:31:33.120"},
 		{"datetime(3) time", cell{dt3, dateTime3}, when},
-		{"datetime(3) any", cell{dt3, dateTime3}, any(when)},
+		{"datetime(3) any", cell{dt3, dateTime3}, anyOf{when}},
 		{"datetime NullTime", cell{dt3, dateTime3}, sql.NullTime{Time: when, Valid: true}},
 		{"datetime int", cell{dt3, dateTime3}, fail(errScanConvert, int64(0))},
 		{"zero datetime string", cell{col(myTypeDatetime, 0, 0), []byte{0}}, "0000-00-00 00:00:00"},
@@ -180,7 +222,7 @@ func TestScanBinary(t *testing.T) {
 		{"null int", null, fail(errScanNull, 0)},
 		{"null string", null, fail(errScanNull, "")},
 		{"null *int", null, (*int)(nil)},
-		{"null any", null, any(nil)},
+		{"null any", null, anyOf{nil}},
 		{"null []byte", null, []byte(nil)},
 		{"null RawBytes", null, sql.RawBytes(nil)},
 		{"null NullInt64", null, sql.NullInt64{}},
@@ -196,6 +238,7 @@ func TestScanText(t *testing.T) {
 
 	when := time.Date(2026, 11, 18, 13, 31, 33, 120e6, time.UTC)
 	long := bytes.Repeat([]byte("x"), 300)
+	decimal := columnDefinition{Type: myTypeNewDecimal, Collation: collationBinary}
 
 	runScanCases(t, func(c cell) *Rows { return textRows(&c.col, c.enc) }, []scanCase{
 		{"-5 int64", cell{col(myTypeLong, 0, 0), []byte("-5")}, int64(-5)},
@@ -210,12 +253,19 @@ func TestScanText(t *testing.T) {
 		{"1.5 float64", cell{col(myTypeNewDecimal, 0, 0), []byte("1.5")}, 1.5},
 		{"true bool", cell{col(myTypeVarString, 0, 0), []byte("true")}, true},
 		{"2 bool", cell{col(myTypeTiny, 0, 0), []byte("2")}, fail(errScanSyntax, false)},
-		{"int any", cell{col(myTypeLong, 0, 0), []byte("7")}, any(int64(7))},
-		{"ubig any", cell{col(myTypeLongLong, flagUnsigned, 0), []byte("7")}, any(uint64(7))},
-		{"float any", cell{col(myTypeFloat, 0, 0), []byte("0.1")}, any(float32(0.1))},
-		{"string any", cell{col(myTypeVarString, 0, 0), []byte("x")}, any([]byte("x"))},
+		{"int any", cell{col(myTypeLong, 0, 0), []byte("7")}, anyOf{int64(7)}},
+		{"ubig any", cell{col(myTypeLongLong, flagUnsigned, 0), []byte("7")}, anyOf{uint64(7)}},
+		{"float any", cell{col(myTypeFloat, 0, 0), []byte("0.1")}, anyOf{float32(0.1)}},
+		{"string any", cell{col(myTypeVarString, 0, 0), []byte("x")}, anyOf{"x"}},
+		{"binary any", cell{columnDefinition{Type: myTypeBlob, Collation: collationBinary}, []byte("x")}, anyOf{[]byte("x")}},
+		{"decimal any", cell{decimal, []byte("1.50")}, anyOf{[]byte("1.50")}},
+		{"bit '1' uint64", cell{columnDefinition{Type: myTypeBit}, []byte("1")}, uint64('1')},
+		{"time duration", cell{col(myTypeTime, 0, 0), []byte("-838:59:59")}, -(838*time.Hour + 3599*time.Second)},
+		{"time(1) duration", cell{col(myTypeTime, 0, 1), []byte("12:00:00.5")}, 12*time.Hour + 500*time.Millisecond},
+		{"bad time duration", cell{col(myTypeTime, 0, 0), []byte("12:5:00")}, fail(errScanSyntax, time.Duration(0))},
+		{"int duration", cell{col(myTypeLong, 0, 0), []byte("5")}, time.Duration(5)},
 		{"date time", cell{col(myTypeDate, 0, 0), []byte("2026-11-18")}, time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC)},
-		{"datetime(2) any", cell{col(myTypeDatetime, 0, 2), []byte("2026-11-18 13:31:33.12")}, any(when)},
+		{"datetime(2) any", cell{col(myTypeDatetime, 0, 2), []byte("2026-11-18 13:31:33.12")}, anyOf{when}},
 		{"zero date time", cell{col(myTypeDatetime, 0, 0), []byte("0000-00-00 00:00:00")}, time.Time{}},
 		{"bad date", cell{col(myTypeDatetime, 0, 0), []byte("2026-11-18T13:31:33")}, fail(errScanConvert, time.Time{})},
 		{"varchar date", cell{col(myTypeVarString, 0, 0), []byte("2026-11-18")}, fail(errScanConvert, time.Time{})},
@@ -291,6 +341,7 @@ func FuzzScan(f *testing.F) {
 
 	columns := []columnDefinition{
 		col(myTypeLong, 0, 0), col(myTypeVarString, 0, 0), col(myTypeDatetime, 0, 6), col(myTypeTime, 0, 3),
+		col(myTypeBit, 0, 0),
 	}
 
 	f.Fuzz(func(t *testing.T, buf []byte, binary bool) {
@@ -304,11 +355,13 @@ func FuzzScan(f *testing.F) {
 			n    int64
 			s    string
 			when time.Time
+			d    time.Duration
+			u    uint64
 			a    any
 		)
 
-		_ = rows.Scan(&n, &s, &when, &a)
-		_ = rows.Scan(&a, &a, &a, &a)
+		_ = rows.Scan(&n, &s, &when, &d, &u)
+		_ = rows.Scan(&a, &a, &a, &a, &a)
 	})
 }
 
@@ -354,3 +407,45 @@ func benchmarkScan(b *testing.B, binaryProtocol bool) {
 
 func BenchmarkScanBinary(b *testing.B) { benchmarkScan(b, true) }
 func BenchmarkScanText(b *testing.B)   { benchmarkScan(b, false) }
+
+func TestScanLocation(t *testing.T) {
+	t.Parallel()
+
+	kyiv := time.FixedZone("EET", 2*60*60)
+	want := time.Date(2026, 11, 18, 13, 31, 33, 120e6, kyiv)
+
+	for name, rows := range map[string]*Rows{
+		"binary": binaryRows(cell{col(myTypeDatetime, 0, 3), dateTime3}),
+		"text":   textRows(ptr(col(myTypeDatetime, 0, 3)), []byte("2026-11-18 13:31:33.120")),
+	} {
+		rows.loc = kyiv
+
+		var got time.Time
+		if err := rows.Scan(&got); err != nil || !got.Equal(want) || got.Location() != kyiv {
+			t.Errorf("%s: %v, %v; want %v", name, got, err, want)
+		}
+	}
+}
+
+func TestArgsLocation(t *testing.T) {
+	t.Parallel()
+
+	kyiv := time.FixedZone("EET", 2*60*60)
+	arg := time.Date(2026, 11, 18, 15, 31, 33, 0, kyiv) // 13:31:33 UTC
+
+	// Binary: DATETIME, length 7, the wall clock in loc.
+	for loc, hour := range map[*time.Location]byte{nil: 13, time.UTC: 13, kyiv: 15} {
+		_, values, err := appendParam(nil, nil, arg, loc)
+		if err != nil || values[0] != 7 || values[5] != hour {
+			t.Errorf("binary in %v: %v, %v; want hour %d", loc, values, err, hour)
+		}
+	}
+
+	// Text.
+	for loc, want := range map[*time.Location]string{nil: "13:31:33", kyiv: "15:31:33"} {
+		q, err := encodeQuery(loc, "SELECT ?", arg)
+		if err != nil || !strings.Contains(q, "2026-11-18 "+want) {
+			t.Errorf("text in %v: %q, %v; want %s", loc, q, err, want)
+		}
+	}
+}

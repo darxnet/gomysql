@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 )
 
 // Config describes a connection.
@@ -35,6 +36,12 @@ type Config struct {
 	// collations with an id below 256; a server that does not know the
 	// collation falls back to its default without an error.
 	Collation string
+
+	// Location is the time zone of DATE, DATETIME and TIMESTAMP values:
+	// time.Time arguments are converted to it, and values read are in it.
+	// UTC if nil. TIMESTAMP values are also converted by the server, from
+	// and to the time_zone of the session.
+	Location *time.Location
 
 	// ConnectAttrs are sent to the server, which shows them in
 	// performance_schema.session_connect_attrs.

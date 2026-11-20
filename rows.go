@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"time"
 )
 
 // Rows is the result of a query: of Conn.Query in the text protocol, of
@@ -14,7 +15,8 @@ import (
 type Rows struct {
 	conn    *Conn
 	columns []columnDefinition
-	buf     []byte // the current row
+	loc     *time.Location // Config.Location
+	buf     []byte         // the current row
 	err     error
 	done    bool // the rows are read up to the end, or failed
 	closed  bool
@@ -78,15 +80,24 @@ func (rows *Rows) Close() error {
 
 // Scan copies the columns of the current row into dest, with the
 // conversions of database/sql: a pointer to a string, []byte,
-// sql.RawBytes, any, bool, integer, float or time.Time, an sql.Scanner such
-// as sql.NullString, a pointer to a pointer (nil for NULL), or a pointer
-// to a type based on one of these.
+// sql.RawBytes, any, bool, integer, float, time.Time or time.Duration, an
+// sql.Scanner such as sql.NullString, a pointer to a pointer (nil for
+// NULL), or a pointer to a type based on one of these.
 //
 // NULL goes only into []byte, sql.RawBytes, any, a pointer to a pointer
 // and an sql.Scanner; into anything else it is an error. DATE, DATETIME
 // and TIMESTAMP values scanned into time.Time, any or an sql.Scanner are
-// time.Time in UTC; the zero date is the zero time.Time. Scanned into a
-// string they keep the server's format.
+// time.Time in Config.Location; the zero date is the zero time.Time.
+// Scanned into a string they keep the server's format. TIME values go
+// into time.Duration, and BIT values (up to 64 bits) into integers and
+// bool. JSON and text values go into a pointer to a struct, map, array or
+// slice through json.Unmarshal.
+//
+// An any or an sql.Scanner gets the same in both protocols: int64 for
+// integers but BIGINT UNSIGNED and BIT, which are uint64; float32 for
+// FLOAT; float64 for DOUBLE; time.Time; json.RawMessage for JSON (MariaDB
+// sends JSON as LONGTEXT, a string); string for text; and []byte for
+// binary strings, DECIMAL, TIME and the rest.
 //
 // []byte gets a copy; sql.RawBytes points into the row and is valid until
 // the next call to Next, Scan or Close.
@@ -118,8 +129,7 @@ func (rows *Rows) Scan(dest ...any) error {
 //nolint:gocognit // the fast path of assign is inline: a call per column costs 20%
 func (rows *Rows) scanText(dest []any) error {
 	buf := rows.buf
-
-	var v value
+	v := value{loc: rows.loc}
 
 	for i := range dest {
 		col := &rows.columns[i]
@@ -146,8 +156,9 @@ func (rows *Rows) scanText(dest []any) error {
 			buf = d.buf
 		}
 
-		// The fast path of assign, inline: strings and integers.
-		if v.kind == kindBytes {
+		// The fast path of assign, inline: strings and integers. BIT values
+		// are bytes, not digits.
+		if v.kind == kindBytes && col.Type != myTypeBit {
 			switch p := dest[i].(type) {
 			case *string:
 				*p = string(v.b)
@@ -202,7 +213,7 @@ func (rows *Rows) scanBinary(dest []any) error {
 	// the integer path; the other types go through a decoder.
 	buf := rows.buf[1+nullsLen:]
 
-	var v value
+	v := value{loc: rows.loc}
 
 	for i := range dest {
 		col := &rows.columns[i]
@@ -268,6 +279,12 @@ func (rows *Rows) scanBinary(dest []any) error {
 type Row struct {
 	err  error
 	rows *Rows
+}
+
+// Err returns the error of the query, if any, without scanning the row,
+// like sql.Row.Err.
+func (r *Row) Err() error {
+	return r.err
 }
 
 // Scan copies the columns of the row into dest, like Rows.Scan, and closes
