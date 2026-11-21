@@ -24,7 +24,10 @@ type Conn struct {
 
 	session uint64 // counts sessions, for statements prepared in one
 
-	infile io.Reader // of LoadData, nil when sent
+	infile      io.Reader // of LoadData, nil when sent
+	infileChunk int       // the size of its packets
+
+	limits serverLimits // of the session
 
 	authPlugin string // of the handshake
 	nonce      []byte // of the handshake
@@ -82,6 +85,7 @@ func (conn *Conn) ReconnectContext(ctx context.Context) error {
 	conn.unwatch()
 	conn.endTx()
 	conn.state, conn.cause = stateIdle, nil
+	conn.limits = serverLimits{}
 	conn.session++
 
 	if err := conn.dial(ctx); err != nil {

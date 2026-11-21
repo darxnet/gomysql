@@ -3,7 +3,10 @@ package gomysql
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
+	"os"
+	"time"
 )
 
 // packetReader reads a byte stream through one buffer. Data that fits in
@@ -169,8 +172,8 @@ func (conn *Conn) readPacket() ([]byte, error) {
 // sequenceMismatch reads the payload of a packet with an unexpected
 // sequence id: an ERR packet sent by the server on its own, such as 4031
 // ER_CLIENT_INTERACTION_TIMEOUT after wait_timeout (MySQL 8.0.24+, seq 0),
-// is returned as *Error rather than as a sequence mismatch. Either way the
-// connection is unusable.
+// is returned as *Error, with ErrBadConn, rather than as a sequence
+// mismatch. Either way the connection is unusable.
 func (conn *Conn) sequenceMismatch(received byte, payloadLen int) error {
 	errSeq := badSequence(conn.sequence, received)
 	conn.breakWith(errSeq)
@@ -184,7 +187,7 @@ func (conn *Conn) sequenceMismatch(received byte, payloadLen int) error {
 		return errSeq
 	}
 
-	return conn.processERRPacket(buf)
+	return fmt.Errorf("%w: %w", conn.processERRPacket(buf), ErrBadConn)
 }
 
 // writeBufferKeep is the largest write buffer kept between writes.
@@ -233,11 +236,42 @@ func writePackets[T string | []byte](conn *Conn, com []byte, arg T) error {
 		conn.wbuf = b[:0]
 	}
 
+	var err error
 	if conn.compress != nil {
-		return conn.writeCompressed(b)
+		err = conn.writeCompressed(b)
+	} else {
+		_, err = conn.conn.Write(b)
 	}
 
-	_, err := conn.conn.Write(b)
+	if err != nil {
+		return conn.errorAfterWrite(err)
+	}
 
-	return err
+	return nil
+}
+
+// errorAfterWrite returns the error the server sent before it closed the
+// connection, such as 1153 ER_NET_PACKET_TOO_LARGE for a packet larger
+// than max_allowed_packet, or else err. Not after a deadline or a canceled
+// context, which must not wait.
+func (conn *Conn) errorAfterWrite(err error) error {
+	if errors.Is(err, os.ErrDeadlineExceeded) || conn.ctx != nil && conn.ctx.Err() != nil {
+		return err
+	}
+
+	_ = conn.conn.SetReadDeadline(time.Now().Add(time.Second))
+
+	buf, rerr := conn.reader.next(headerSize)
+	if rerr != nil {
+		return err
+	}
+
+	payload, rerr := conn.reader.next(uint24(buf))
+	if rerr != nil || len(payload) == 0 || payload[0] != iERR {
+		return err
+	}
+
+	conn.breakWith(err)
+
+	return fmt.Errorf("%w: %w", conn.processERRPacket(payload), ErrBadConn)
 }

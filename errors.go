@@ -33,9 +33,13 @@ func (e *Error) Is(target error) bool {
 }
 
 // ErrBadConn means the connection is unusable: an I/O error, a canceled
-// or expired context, or a packet that could not be parsed or that the
-// protocol did not expect (wrong sequence id or packet type). Every later
-// command fails with it, sending nothing, until Reconnect.
+// or expired context, a packet that could not be parsed or that the
+// protocol did not expect (wrong sequence id or packet type), or a server
+// error after which the server closes the connection (such as 1153 for a
+// packet larger than max_allowed_packet, or 4031 after wait_timeout). The
+// error that broke the connection matches it with errors.Is, wrapping the
+// cause; every later command fails with it, sending nothing, until
+// Reconnect.
 //
 // It is not driver.ErrBadConn: the command may already have run on the
 // server, so repeating it on another connection is not safe.

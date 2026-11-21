@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -649,13 +650,35 @@ func TestResetConnectionFails(t *testing.T) {
 	}
 }
 
+// limitsResult answers limitsQuery with max_allowed_packet and defaults.
+func (c *fakeConn) limitsResult(maxAllowedPacket int) error {
+	cols := make([]fakeColumn, 6)
+	for i := range cols {
+		cols[i] = fakeColumn{"v", myTypeLongLong, 0}
+	}
+
+	var row []byte
+	for _, v := range []string{strconv.Itoa(maxAllowedPacket), "16382", "151", "0", "28800", "0"} {
+		row = appendLenEncString(row, v)
+	}
+
+	c.seq = 1
+	_, err := c.conn.Write(c.eof(c.resultSet(nil, cols, row), true))
+
+	return err
+}
+
 // loadServer answers LOAD statements with a request for a file, counts
 // the bytes of the file and reports them as affected rows (mod 251, a
-// one-byte length-encoded integer).
-func loadServer(t *testing.T, received *int) Config {
+// one-byte length-encoded integer); the largest packet goes to *largest.
+func loadServer(t *testing.T, maxAllowedPacket int, received, largest *int) Config {
 	t.Helper()
 
 	return newFakeServer(t, true, func(c *fakeConn, _ byte, payload []byte) error {
+		if string(payload) == limitsQuery {
+			return c.limitsResult(maxAllowedPacket)
+		}
+
 		if !strings.HasPrefix(string(payload), "LOAD") {
 			return c.ok()
 		}
@@ -676,6 +699,7 @@ func loadServer(t *testing.T, received *int) Config {
 			}
 
 			*received += len(p)
+			*largest = max(*largest, len(p))
 		}
 
 		return c.write([]byte{iOK, byte(*received % 251), 0, 2, 0, 0, 0}) //nolint:gosec // G115: below 251
@@ -685,9 +709,9 @@ func loadServer(t *testing.T, received *int) Config {
 func TestLoadData(t *testing.T) {
 	t.Parallel()
 
-	var received int
+	var received, largest int
 
-	conn, err := Connect(loadServer(t, &received))
+	conn, err := Connect(loadServer(t, 64<<20, &received, &largest))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -700,8 +724,8 @@ func TestLoadData(t *testing.T) {
 		t.Fatalf("%d of %d bytes, %v", received, len(data), err)
 	}
 
-	if n, _ := res.RowsAffected(); n != int64(len(data)%251) {
-		t.Errorf("affected %d", n)
+	if n, _ := res.RowsAffected(); n != int64(len(data)%251) || largest != loadDataChunk {
+		t.Errorf("affected %d, largest packet %d", n, largest)
 	}
 
 	// Without LoadData: an empty file, an error, the connection usable.
@@ -729,5 +753,86 @@ func TestLoadData(t *testing.T) {
 
 	if e := conn.Ping(); !errors.Is(e, ErrBadConn) {
 		t.Errorf("Ping after a failing reader: %v", e)
+	}
+}
+
+// Packets of LoadData are below the server's max_allowed_packet.
+func TestLoadDataPacketSize(t *testing.T) {
+	t.Parallel()
+
+	var received, largest int
+
+	conn, err := Connect(loadServer(t, 2048, &received, &largest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, e := conn.LoadData("LOAD", strings.NewReader(strings.Repeat("x", 10000))); e != nil || received != 10000 {
+		t.Fatalf("%d bytes, %v", received, e)
+	}
+
+	if largest != 2047 {
+		t.Errorf("largest packet %d, want 2047", largest)
+	}
+}
+
+// A server that refuses a packet sends ERR before it closes the connection:
+// that error is returned, not the failed write.
+func TestLoadDataServerError(t *testing.T) {
+	t.Parallel()
+
+	cfg := newFakeServer(t, true, func(c *fakeConn, _ byte, payload []byte) error {
+		if string(payload) == limitsQuery {
+			return c.limitsResult(64 << 20)
+		}
+
+		c.seq = 1
+		if err := c.write(append([]byte{iLocalInfile}, "file"...)); err != nil {
+			return err
+		}
+
+		if _, err := c.read(); err != nil {
+			return err
+		}
+
+		_ = c.errPacket(1153, "08S01", "Got a packet bigger than 'max_allowed_packet' bytes")
+
+		return io.EOF // closes the connection
+	}).config()
+
+	conn, err := Connect(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	// Enough data that a write fails after the server is gone.
+	_, err = conn.LoadData("LOAD", strings.NewReader(strings.Repeat("x", 64*loadDataChunk)))
+	if !errors.Is(err, &Error{Number: 1153}) || !errors.Is(err, ErrBadConn) {
+		t.Errorf("refused packet: %v", err)
+	}
+}
+
+func TestClosesConnection(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		number uint16
+		state  string
+		closes bool
+	}{
+		{1153, "08S01", true},  // ER_NET_PACKET_TOO_LARGE
+		{1053, "08S01", true},  // ER_SERVER_SHUTDOWN
+		{1047, "08S01", false}, // ER_UNKNOWN_COM_ERROR
+		{1064, "42000", false},
+		{1317, "70100", false}, // ER_QUERY_INTERRUPTED
+	} {
+		e := &Error{Number: tc.number}
+		copy(e.SQLState[:], tc.state)
+
+		if got := closesConnection(e); got != tc.closes {
+			t.Errorf("%d %s: %v", tc.number, tc.state, got)
+		}
 	}
 }

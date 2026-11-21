@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -180,5 +181,28 @@ func TestConformanceTxContext(t *testing.T) {
 
 	if e := tx.Commit(); !errors.Is(e, context.Canceled) {
 		t.Errorf("Commit after cancel: %v", e)
+	}
+}
+
+// A statement larger than max_allowed_packet gets the server's error,
+// 1153, not a failed write; the server closes the connection.
+func TestConformancePacketTooLarge(t *testing.T) {
+	t.Parallel()
+
+	c := confConn(t, "b", "b")
+	defer confRecover(t)
+
+	var limit int
+	if err := c.QueryRow("SELECT @@max_allowed_packet").Scan(&limit); err != nil {
+		t.Fatal(err)
+	}
+
+	if limit > 16<<20 {
+		t.Skipf("max_allowed_packet %d", limit)
+	}
+
+	_, err := c.Exec("SELECT '" + strings.Repeat("x", limit) + "'")
+	if !errors.Is(err, &gomysql.Error{Number: 1153}) || !errors.Is(err, gomysql.ErrBadConn) {
+		t.Errorf("a statement of %d bytes: %v", limit+10, err)
 	}
 }
