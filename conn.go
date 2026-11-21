@@ -2,6 +2,7 @@ package gomysql
 
 import (
 	"context"
+	"io"
 	"net"
 	"sync"
 )
@@ -22,6 +23,8 @@ type Conn struct {
 	sequence     byte
 
 	session uint64 // counts sessions, for statements prepared in one
+
+	infile io.Reader // of LoadData, nil when sent
 
 	authPlugin string // of the handshake
 	nonce      []byte // of the handshake

@@ -5,8 +5,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -606,5 +608,126 @@ func TestTxMethods(t *testing.T) {
 
 	if _, e := conn.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSnapshot}); e == nil {
 		t.Error("snapshot: no error")
+	}
+}
+
+// A reset whose SET NAMES or init commands fail leaves a session that is
+// not the configured one: the connection is broken.
+func TestResetConnectionFails(t *testing.T) {
+	t.Parallel()
+
+	for _, failing := range []string{"SET NAMES", "SET a"} {
+		resets := 0
+
+		cfg := newFakeServer(t, true, func(c *fakeConn, cmd byte, payload []byte) error {
+			if cmd == comResetConnection {
+				resets++
+			}
+
+			if resets > 0 && strings.HasPrefix(string(payload), failing) {
+				return c.errPacket(1064, "42000", "syntax")
+			}
+
+			return c.ok()
+		}).config()
+		cfg.InitCommands = []string{"SET a"}
+
+		conn, err := Connect(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if e := conn.ResetConnection(); !errors.Is(e, &Error{Number: 1064}) {
+			t.Errorf("%s fails: %v", failing, e)
+		}
+
+		if e := conn.Ping(); !errors.Is(e, ErrBadConn) {
+			t.Errorf("%s fails, then Ping: %v", failing, e)
+		}
+
+		_ = conn.Close()
+	}
+}
+
+// loadServer answers LOAD statements with a request for a file, counts
+// the bytes of the file and reports them as affected rows (mod 251, a
+// one-byte length-encoded integer).
+func loadServer(t *testing.T, received *int) Config {
+	t.Helper()
+
+	return newFakeServer(t, true, func(c *fakeConn, _ byte, payload []byte) error {
+		if !strings.HasPrefix(string(payload), "LOAD") {
+			return c.ok()
+		}
+
+		c.seq = 1
+		if err := c.write(append([]byte{iLocalInfile}, "file"...)); err != nil {
+			return err
+		}
+
+		for {
+			p, err := c.read()
+			if err != nil {
+				return err
+			}
+
+			if len(p) == 0 {
+				break
+			}
+
+			*received += len(p)
+		}
+
+		return c.write([]byte{iOK, byte(*received % 251), 0, 2, 0, 0, 0}) //nolint:gosec // G115: below 251
+	}).config()
+}
+
+func TestLoadData(t *testing.T) {
+	t.Parallel()
+
+	var received int
+
+	conn, err := Connect(loadServer(t, &received))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	data := strings.Repeat("x", 3*loadDataChunk+5)
+
+	res, err := conn.LoadData("LOAD", strings.NewReader(data))
+	if err != nil || received != len(data) {
+		t.Fatalf("%d of %d bytes, %v", received, len(data), err)
+	}
+
+	if n, _ := res.RowsAffected(); n != int64(len(data)%251) {
+		t.Errorf("affected %d", n)
+	}
+
+	// Without LoadData: an empty file, an error, the connection usable.
+	received = 0
+
+	if _, e := conn.Exec("LOAD"); !errors.Is(e, errLocalInfile) || received != 0 {
+		t.Errorf("Exec of LOAD: %v, %d bytes", e, received)
+	}
+
+	if _, e := conn.LoadData("SELECT", strings.NewReader("x")); !errors.Is(e, errNoFile.error) {
+		t.Errorf("no file asked for: %v", e)
+	}
+
+	if e := conn.Ping(); e != nil {
+		t.Fatalf("Ping: %v", e)
+	}
+
+	// A failing reader closes the connection.
+	errRead := errors.New("read failed")
+	r := io.MultiReader(strings.NewReader("abc"), iotest.ErrReader(errRead))
+
+	if _, e := conn.LoadData("LOAD", r); !errors.Is(e, errRead) || !errors.Is(e, ErrBadConn) {
+		t.Errorf("failing reader: %v", e)
+	}
+
+	if e := conn.Ping(); !errors.Is(e, ErrBadConn) {
+		t.Errorf("Ping after a failing reader: %v", e)
 	}
 }

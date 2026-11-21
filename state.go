@@ -13,6 +13,12 @@ import (
 // still sending them. Nothing was sent; close the Rows and try again.
 var ErrBusy = errors.New("gomysql: connection busy: the Rows of the previous query are not closed")
 
+// inSyncError is an error of the client after which the protocol is in sync:
+// it does not break the connection.
+type inSyncError struct{ error }
+
+func (e inSyncError) Unwrap() error { return e.error }
+
 // The states of a connection besides idle: an open Rows is Conn.rows.
 const (
 	stateIdle   uint8 = iota
@@ -63,8 +69,12 @@ func (conn *Conn) fail(err error) error {
 		return nil
 	}
 
-	var serverErr *Error
-	if !errors.As(err, &serverErr) || errors.Is(err, ErrBadConn) {
+	var (
+		serverErr *Error
+		clean     inSyncError
+	)
+
+	if !errors.As(err, &serverErr) && !errors.As(err, &clean) || errors.Is(err, ErrBadConn) {
 		conn.breakWith(err)
 	}
 
