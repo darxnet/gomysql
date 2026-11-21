@@ -171,8 +171,7 @@ func (conn *Conn) readResultHeader() (columns int, err error) {
 	case iERR:
 		return 0, conn.processERRPacket(buf)
 	case iLocalInfile:
-		// Not reached: the client does not set CLIENT_LOCAL_FILES.
-		return 0, errLocalInfile
+		return 0, conn.sendFile()
 	default:
 		return columnCount(buf)
 	}

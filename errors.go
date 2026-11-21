@@ -46,7 +46,7 @@ var (
 	errOldPassword                  = errors.New("gomysql: server requested the insecure mysql_old_password")
 	errServerDontSupportSSL         = errors.New("gomysql: server does not support TLS")
 	errServerDontSupportCompression = errors.New("gomysql: server does not support compression")
-	errLocalInfile                  = errors.New("gomysql: LOAD DATA LOCAL INFILE is not supported")
+	errLocalInfile                  = errors.New("gomysql: LOAD DATA LOCAL INFILE runs with Conn.LoadData")
 	errMalformedHandshake           = malformed("handshake")
 
 	errPacketPayloadEmpty = malformed("empty payload")

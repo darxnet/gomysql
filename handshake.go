@@ -136,7 +136,9 @@ func (conn *Conn) handshakeResponse41(authPluginName string, authResponse []byte
 // the server offers in conn.capFlags.
 func (conn *Conn) clientCaps(authResponseLen int) (uint32, error) {
 	server := conn.capFlags
-	caps := clientProtocol41 | clientLongPassword | clientPluginAuth | clientSecureConn |
+	// CLIENT_LOCAL_FILES: the server may ask for a file, which is answered
+	// only with the reader of Conn.LoadData, never read from the disk.
+	caps := clientProtocol41 | clientLongPassword | clientPluginAuth | clientSecureConn | clientLocalFiles |
 		server&clientDeprecateEOF
 
 	if conn.config.Compress {
