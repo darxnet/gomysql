@@ -58,6 +58,11 @@ type Config struct {
 	// and to the time_zone of the session.
 	Location *time.Location
 
+	// InitCommands are SQL statements run in order after connecting, after
+	// Reconnect, ResetConnection and ChangeUser, such as
+	// "SET time_zone = '+00:00'". If one fails, so does the connection.
+	InitCommands []string
+
 	// ConnectAttrs are sent to the server, which shows them in
 	// performance_schema.session_connect_attrs.
 	ConnectAttrs map[string]string
@@ -87,6 +92,18 @@ func (config *Config) collationID() (uint8, error) {
 	}
 
 	return id, nil
+}
+
+// setNames returns SET NAMES for the collation of the session.
+func (config *Config) setNames() string {
+	collation := strings.ToLower(config.Collation)
+	if collation == "" {
+		collation = "utf8mb4_general_ci"
+	}
+
+	charset, _, _ := strings.Cut(collation, "_")
+
+	return "SET NAMES " + charset + " COLLATE " + collation
 }
 
 // tlsConfig returns config.TLS, with the host of Address as ServerName if

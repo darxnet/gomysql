@@ -95,7 +95,7 @@ func (conn *Conn) authenticate(name string, nonce []byte) error {
 		User:     conn.config.User,
 		Password: conn.config.Password,
 		Nonce:    nonce,
-		Secure:   conn.config.TLS != nil || conn.config.Network == "unix",
+		Secure:   conn.secure(),
 		Config:   &conn.config,
 	}
 
@@ -146,13 +146,19 @@ func (conn *Conn) authExchange(a *Auth, plugin AuthPlugin, nonce []byte) error {
 	return errAuthRounds
 }
 
-// authOK ends authentication.
+// secure reports whether the password may be sent as it is.
+func (conn *Conn) secure() bool {
+	return conn.config.TLS != nil || conn.config.Network == "unix"
+}
+
+// authOK ends authentication. Compression starts after the first one, not
+// after ChangeUser.
 func (conn *Conn) authOK(buf []byte) error {
 	if err := conn.processOKPacket(buf); err != nil {
 		return err
 	}
 
-	if conn.config.Compress {
+	if conn.config.Compress && conn.compress == nil {
 		return conn.startCompression()
 	}
 
