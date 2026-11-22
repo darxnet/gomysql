@@ -62,7 +62,8 @@ func (conn *Conn) end(err error) error {
 }
 
 // fail marks the connection broken after err, unless err is nil or the
-// server's (*Error, which leaves the protocol in sync). After a canceled
+// server's (*Error, which leaves the protocol in sync, but for connection
+// exceptions). After a canceled
 // or expired context it returns the context's error, with ErrBadConn.
 func (conn *Conn) fail(err error) error {
 	if err == nil {
@@ -74,7 +75,17 @@ func (conn *Conn) fail(err error) error {
 		clean     inSyncError
 	)
 
-	if !errors.As(err, &serverErr) && !errors.As(err, &clean) || errors.Is(err, ErrBadConn) {
+	switch {
+	case errors.Is(err, ErrBadConn):
+		conn.breakWith(err)
+	case errors.As(err, &serverErr):
+		if closesConnection(serverErr) {
+			err = fmt.Errorf("%w: %w", err, ErrBadConn)
+			conn.breakWith(err)
+		}
+	case !errors.As(err, &clean):
+		// I/O errors: the connection is unusable, which ErrBadConn says.
+		err = fmt.Errorf("%w: %w", err, ErrBadConn)
 		conn.breakWith(err)
 	}
 
@@ -115,6 +126,16 @@ func contextErr(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// closesConnection reports whether the server closes the connection after
+// err: an error of SQLSTATE class 08, connection exception, such as 1153
+// ER_NET_PACKET_TOO_LARGE, but 1047 ER_UNKNOWN_COM_ERROR, after which it
+// keeps it open (as go-sql-driver decides since #1852). Errors the server
+// sends on its own before closing, such as 4031 after wait_timeout, come
+// out of sequence: sequenceMismatch breaks the connection.
+func closesConnection(err *Error) bool {
+	return err.SQLState[0] == '0' && err.SQLState[1] == '8' && err.Number != 1047
 }
 
 // breakWith marks the connection broken by err, the first cause kept.

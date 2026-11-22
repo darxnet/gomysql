@@ -11,8 +11,9 @@ import (
 // DATA LOCAL INFILE; it ran.
 var errNoFile = inSyncError{errors.New("gomysql: LoadData: the statement asked for no file")}
 
-// loadDataChunk is the size of the packets of LoadData: below the smallest
-// default max_allowed_packet (4 MB in MySQL 5.7).
+// loadDataChunk is the size of the packets of LoadData, unless the server
+// accepts less (max_allowed_packet - 1). Larger packets cost more CPU and
+// save no time: the server takes it.
 const loadDataChunk = 1 << 20
 
 // LoadData runs query, a LOAD DATA LOCAL INFILE statement, and sends r as
@@ -29,11 +30,18 @@ func (conn *Conn) LoadData(query string, r io.Reader) (*Result, error) {
 
 // LoadDataContext is LoadData within ctx.
 func (conn *Conn) LoadDataContext(ctx context.Context, query string, r io.Reader) (*Result, error) {
-	if err := conn.begin(ctx); err != nil {
+	limits, err := conn.serverLimits(ctx)
+	if err != nil {
 		return nil, err
 	}
 
-	if err := writeCommand(conn, comQuery, query); err != nil {
+	if berr := conn.begin(ctx); berr != nil {
+		return nil, berr
+	}
+
+	conn.infileChunk = max(1, min(loadDataChunk, limits.maxAllowedPacket-1))
+
+	if err = writeCommand(conn, comQuery, query); err != nil {
 		return nil, conn.end(err)
 	}
 
@@ -50,7 +58,7 @@ func (conn *Conn) LoadDataContext(ctx context.Context, query string, r io.Reader
 }
 
 // sendFile answers the server's request for a file (0xfb, the name) with
-// the reader of LoadData, in packets of loadDataChunk bytes and an empty
+// the reader of LoadData, in packets of infileChunk bytes and an empty
 // one. Outside LoadData it sends an empty file and returns errLocalInfile
 // once the server answers. Then the response to the statement follows.
 func (conn *Conn) sendFile() error {
@@ -69,13 +77,13 @@ func (conn *Conn) sendFile() error {
 
 	conn.infile = nil
 
-	buf := make([]byte, headerSize+loadDataChunk)
+	buf := make([]byte, headerSize+conn.infileChunk)
 
 	for {
 		n, err := io.ReadFull(r, buf[headerSize:])
 		if n > 0 {
 			if werr := conn.writeRaw(buf[:headerSize+n]); werr != nil {
-				return werr
+				return conn.errorAfterWrite(werr)
 			}
 		}
 

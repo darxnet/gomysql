@@ -55,6 +55,7 @@ func (conn *Conn) exec(query string) error {
 func (conn *Conn) newSession() {
 	conn.session++
 	conn.endTx()
+	conn.limits = serverLimits{}
 }
 
 // initSession runs Config.InitCommands. A failure breaks the connection:

@@ -1024,7 +1024,7 @@ func TestConformanceServerError(t *testing.T) {
 }
 
 // After wait_timeout the server closes the connection: MySQL 8.0.24+ sends
-// error 4031 first, older servers just close.
+// error 4031 first, older servers just close. Both are ErrBadConn.
 func TestConformanceWaitTimeout(t *testing.T) {
 	t.Parallel()
 
@@ -1046,8 +1046,9 @@ func TestConformanceWaitTimeout(t *testing.T) {
 		t.Errorf("got server error %v, want 4031 or a network error", err)
 	}
 
-	if errors.Is(err, gomysql.ErrBadConn) {
-		t.Errorf("got %v, want the server's error or a network error", err)
+	// Either way the connection is closed.
+	if !errors.Is(err, gomysql.ErrBadConn) {
+		t.Errorf("got %v, want ErrBadConn", err)
 	}
 
 	t.Logf("Ping after wait_timeout: %v", err)
