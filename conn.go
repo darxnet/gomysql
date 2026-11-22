@@ -28,6 +28,7 @@ type Conn struct {
 	infileChunk int       // the size of its packets
 
 	limits serverLimits // of the session
+	stmts  stmtCache    // the statements prepared in the session
 
 	authPlugin string // of the handshake
 	nonce      []byte // of the handshake

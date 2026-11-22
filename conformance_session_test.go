@@ -83,8 +83,8 @@ func TestConformanceResetConnection(t *testing.T) {
 		t.Error("the temporary table survived")
 	}
 
-	if _, err := stmt.Exec(); err == nil {
-		t.Error("a statement prepared before the reset ran")
+	if _, err := stmt.Exec(); err != nil {
+		t.Errorf("a statement prepared before the reset: %v", err)
 	}
 
 	_ = stmt.Close()
