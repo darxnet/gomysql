@@ -1236,3 +1236,37 @@ func TestConformanceStmtCache(t *testing.T) {
 
 	t.Logf("Com_stmt_close = %d", closed)
 }
+
+// A cached statement outlives its table: binary data stays whole after
+// the table is recreated twice with other column types (MySQL 8 converted
+// a MYSQL_TYPE_STRING parameter in the character set of the old column).
+func TestConformanceStmtRecreatedTable(t *testing.T) {
+	t.Parallel()
+
+	c := confConn(t, "b", "b")
+	defer func() { _, _ = c.Exec("DROP TABLE IF EXISTS stmt_recreated") }()
+
+	var st *gomysql.Stmt
+
+	for _, step := range []struct {
+		typ string
+		arg any
+	}{{"BIGINT", 0}, {"VARCHAR(64)", "x"}, {"VARBINARY(8)", []byte{0, 0xff, 'a'}}} {
+		mustExec(t, c, "DROP TABLE IF EXISTS stmt_recreated")
+		mustExec(t, c, "CREATE TABLE stmt_recreated (id INT PRIMARY KEY, v "+step.typ+") DEFAULT CHARSET=utf8mb4")
+
+		var err error
+		if st, err = c.Prepare("INSERT INTO stmt_recreated VALUES (1, ?)"); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := st.Exec(step.arg); err != nil {
+			t.Fatalf("%s: %v", step.typ, err)
+		}
+	}
+
+	var got []byte
+	if err := c.QueryRow("SELECT v FROM stmt_recreated").Scan(&got); err != nil || string(got) != "\x00\xffa" {
+		t.Errorf("stored %q, %v; want %q", got, err, "\x00\xffa")
+	}
+}

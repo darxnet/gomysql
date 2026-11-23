@@ -396,7 +396,11 @@ func appendParam(types, values []byte, arg any, loc *time.Location) (newTypes, n
 	case string:
 		return append(types, myTypeString, 0), appendLenEncString(values, v), nil
 	case []byte:
-		return append(types, myTypeString, 0), appendLenEncBytes(values, v), nil
+		// A binary string, as _binary'...' in text: MySQL 8 converts a
+		// MYSQL_TYPE_STRING parameter of a statement reprepared after its
+		// table was recreated in the character set of the old column,
+		// truncating binary data at the first invalid byte.
+		return append(types, myTypeBlob, 0), appendLenEncBytes(values, v), nil
 	case time.Time:
 		return append(types, myTypeDatetime, 0), appendDatetime(values, inLocation(v, loc)), nil
 	case bool:
