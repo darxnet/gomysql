@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 )
 
 // Conn is a connection to the server. It is not safe for concurrent use.
@@ -29,6 +30,15 @@ type Conn struct {
 
 	limits serverLimits // of the session
 	stmts  stmtCache    // the statements prepared in the session
+
+	database string // the default database, as far as known
+
+	// Of a connection of a DB.
+	pool          *DB
+	idleSince     time.Time // when returned
+	opened        time.Time
+	lifetimeShare float64 // of the lifetime of the pool this connection lives
+	inPool        bool    // idle in the pool
 
 	authPlugin string // of the handshake
 	nonce      []byte // of the handshake
@@ -104,6 +114,8 @@ func (conn *Conn) ReconnectContext(ctx context.Context) error {
 
 		err = conn.end(err)
 	}
+
+	conn.database = conn.config.Database
 
 	// Even a refusal of the server leaves no connection.
 	if err != nil {

@@ -56,6 +56,7 @@ func (conn *Conn) UseDatabase(name string) error {
 
 	err := conn.simpleCommand(comInitDB, name)
 	if err == nil {
+		conn.database = name
 		err = conn.evictStmts()
 	}
 
@@ -98,7 +99,14 @@ const comQuit byte = 0x01
 // Close sends COM_QUIT, if the connection is idle, and closes it. The
 // server answers COM_QUIT by closing the socket, so there is no response
 // to read. Closing a closed connection does nothing.
+//
+// A connection of DB.Conn goes back to the pool instead, unless it cannot
+// serve another user as it is (see DB.Conn); it must not be used after.
 func (conn *Conn) Close() error {
+	if conn.pool != nil {
+		return conn.pool.put(conn)
+	}
+
 	if conn.state == stateClosed {
 		return nil
 	}
