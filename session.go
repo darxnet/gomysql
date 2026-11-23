@@ -95,6 +95,7 @@ func (conn *Conn) ChangeUserContext(ctx context.Context, user, password, databas
 
 	err := conn.changeUser()
 	if err == nil {
+		conn.database = database
 		conn.newSession()
 		err = conn.initSession()
 	}
