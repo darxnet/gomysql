@@ -14,29 +14,23 @@ const comStmtClose byte = 0x19
 
 // Stmt is a prepared statement of a connection.
 type Stmt struct {
-	conn    *Conn
-	session uint64 // of conn when prepared
-	query   string
-	columns []columnDefinition
-	params  []columnDefinition
-	names   []string // of the :name placeholders
-	id      uint32
+	conn       *Conn
+	prev, next *Stmt  // in the cache, by use
+	session    uint64 // of conn when prepared, 0 when no longer cached
+	query      string
+	sent       string // query with :name placeholders as ?
+	columns    []columnDefinition
+	params     []columnDefinition
+	names      []string // of the :name placeholders
+	id         uint32
+	backslash  bool // whether backslashes escaped in sent
 }
 
-// Close deallocates the statement on the server (COM_STMT_CLOSE, which
-// has no response). A statement of a connection that is closed, broken or
-// reconnected since has nothing to deallocate.
+// Close does nothing: the statement stays in the cache of the connection,
+// shared by every Prepare of its text, and is deallocated when the least
+// recently used of more than the cache holds, or with the connection.
 func (stmt *Stmt) Close() error {
-	conn := stmt.conn
-	if conn.state != stateIdle || stmt.session != conn.session {
-		return nil
-	}
-
-	if err := conn.begin(context.Background()); err != nil {
-		return err
-	}
-
-	return conn.end(writeCommand(conn, comStmtClose, binary.LittleEndian.AppendUint32(nil, stmt.id)))
+	return nil
 }
 
 const comStmtPrepare = 0x16
@@ -45,6 +39,16 @@ const comStmtPrepare = 0x16
 // placeholders are ? or :name, not both; a :name placeholder takes its
 // argument by name, as in Conn.Query.
 //
+// The connection caches its statements: Prepare of the same text returns
+// the same Stmt without asking the server. The cache holds a share of
+// max_prepared_stmt_count per connection, at least 64 statements, and
+// deallocates the least recently used beyond. If the server already holds
+// max_prepared_stmt_count statements (error 1461), the cache deallocates
+// its older half, stays that small and prepares again. A statement
+// deallocated so, or by Reconnect, ResetConnection or ChangeUser, or
+// unknown to the server (error 1243, as after a failover), is prepared
+// again when executed.
+//
 // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_stmt_prepare.html
 func (conn *Conn) Prepare(query string) (*Stmt, error) {
 	return conn.PrepareContext(context.Background(), query)
@@ -52,7 +56,23 @@ func (conn *Conn) Prepare(query string) (*Stmt, error) {
 
 // PrepareContext is Prepare within ctx.
 func (conn *Conn) PrepareContext(ctx context.Context, query string) (*Stmt, error) {
-	sent, names, err := rewriteNamed(query, conn.statusFlags&serverStatusNoBackslashEscapes == 0)
+	backslash := conn.statusFlags&serverStatusNoBackslashEscapes == 0
+
+	if conn.state == stateIdle {
+		if stmt := conn.stmtCache().get(query, backslash); stmt != nil {
+			if err := context.Cause(ctx); err != nil {
+				return nil, err
+			}
+
+			return stmt, nil
+		}
+
+		if err := conn.growStmtCache(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	sent, names, err := rewriteNamed(query, backslash)
 	if err != nil {
 		return nil, err
 	}
@@ -61,28 +81,50 @@ func (conn *Conn) PrepareContext(ctx context.Context, query string) (*Stmt, erro
 		return nil, berr
 	}
 
-	stmt, err := conn.prepare(query, sent, names)
+	stmt := &Stmt{conn: conn, query: query, sent: sent, names: names, backslash: backslash}
+	if err := conn.end(conn.prepare(stmt)); err != nil {
+		return nil, err
+	}
 
-	return stmt, conn.end(err)
+	return stmt, nil
 }
 
-func (conn *Conn) prepare(query, sent string, names []string) (*Stmt, error) {
-	err := writeCommand(conn, comStmtPrepare, sent)
+// prepare prepares stmt within the command and caches it. If the server
+// holds max_prepared_stmt_count statements of all connections (1461), half
+// of the cache is deallocated, the cache shrinks to the rest, and stmt is
+// prepared once more.
+func (conn *Conn) prepare(stmt *Stmt) error {
+	err := conn.prepareStmt(stmt)
+
+	var serverErr *Error
+	if errors.As(err, &serverErr) && serverErr.Number == erMaxPreparedStmtCountReached && conn.stmts.tail != nil {
+		if shrinkErr := conn.shrinkStmtCache(); shrinkErr != nil {
+			return shrinkErr
+		}
+
+		err = conn.prepareStmt(stmt)
+	}
+
+	return err
+}
+
+func (conn *Conn) prepareStmt(stmt *Stmt) error {
+	err := writeCommand(conn, comStmtPrepare, stmt.sent)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	buf, err := conn.readPacket()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	switch buf[0] {
 	case iOK:
 	case iERR:
-		return nil, conn.processERRPacket(buf)
+		return conn.processERRPacket(buf)
 	default:
-		return nil, unexpectedPacket(buf[0])
+		return unexpectedPacket(buf[0])
 	}
 
 	// COM_STMT_PREPARE_OK: 0x00, statement id (4), number of columns (2),
@@ -94,28 +136,24 @@ func (conn *Conn) prepare(query, sent string, names []string) (*Stmt, error) {
 	params := d.uint16()
 
 	if err := d.err("COM_STMT_PREPARE_OK"); err != nil {
-		return nil, err
+		return err
 	}
 
-	stmt := &Stmt{
-		conn:    conn,
-		session: conn.session,
-		query:   query,
-		names:   names,
-		id:      id,
-		columns: make([]columnDefinition, columns),
-		params:  make([]columnDefinition, params),
-	}
+	stmt.id = id
+	stmt.columns = make([]columnDefinition, columns)
+	stmt.params = make([]columnDefinition, params)
 
 	if err := conn.readColumns(stmt.params); err != nil {
-		return nil, err
+		return err
 	}
 
 	if err := conn.readColumns(stmt.columns); err != nil {
-		return nil, err
+		return err
 	}
 
-	return stmt, nil
+	stmt.session = conn.session
+
+	return conn.addStmt(stmt)
 }
 
 const comStmtExecute byte = 0x17
@@ -138,6 +176,14 @@ func (stmt *Stmt) QueryContext(ctx context.Context, args ...any) (*Rows, error) 
 	}
 
 	n, err := conn.readResultHeader()
+	if err != nil && stmt.unknownStmt(err) {
+		if retryErr := stmt.execute(ctx, args); retryErr != nil {
+			return nil, retryErr
+		}
+
+		n, err = conn.readResultHeader()
+	}
+
 	if err != nil {
 		return nil, conn.end(err)
 	}
@@ -176,16 +222,23 @@ func (stmt *Stmt) ExecContext(ctx context.Context, args ...any) (*Result, error)
 		return nil, err
 	}
 
-	result, err := stmt.conn.readResult()
+	conn := stmt.conn
 
-	return result, stmt.conn.end(err)
+	result, err := conn.readResult()
+	if err != nil && stmt.unknownStmt(err) {
+		if retryErr := stmt.execute(ctx, args); retryErr != nil {
+			return nil, retryErr
+		}
+
+		result, err = conn.readResult()
+	}
+
+	return result, conn.end(err)
 }
 
-// errStaleStmt is the error of a statement prepared before Reconnect.
-var errStaleStmt = errors.New("gomysql: the statement was prepared on the connection before Reconnect")
-
-// execute starts the command and sends COM_STMT_EXECUTE; on success the
-// command runs until end.
+// execute starts the command and sends COM_STMT_EXECUTE, preparing the
+// statement again if it is no longer cached; on success the command runs
+// until end.
 func (stmt *Stmt) execute(ctx context.Context, args []any) error {
 	var scratch [64]byte
 
@@ -196,12 +249,22 @@ func (stmt *Stmt) execute(ctx context.Context, args []any) error {
 
 	conn := stmt.conn
 
-	if conn.state == stateIdle && stmt.session != conn.session {
-		return errStaleStmt
+	if stmt.session != conn.session && conn.state == stateIdle {
+		if err := conn.growStmtCache(ctx); err != nil {
+			return err
+		}
 	}
 
 	if err := conn.begin(ctx); err != nil {
 		return err
+	}
+
+	if stmt.session != conn.session {
+		if err := conn.prepare(stmt); err != nil {
+			return conn.end(err)
+		}
+
+		binary.LittleEndian.PutUint32(buf, stmt.id)
 	}
 
 	if err := writeCommand(conn, comStmtExecute, buf); err != nil {
@@ -333,7 +396,11 @@ func appendParam(types, values []byte, arg any, loc *time.Location) (newTypes, n
 	case string:
 		return append(types, myTypeString, 0), appendLenEncString(values, v), nil
 	case []byte:
-		return append(types, myTypeString, 0), appendLenEncBytes(values, v), nil
+		// A binary string, as _binary'...' in text: MySQL 8 converts a
+		// MYSQL_TYPE_STRING parameter of a statement reprepared after its
+		// table was recreated in the character set of the old column,
+		// truncating binary data at the first invalid byte.
+		return append(types, myTypeBlob, 0), appendLenEncBytes(values, v), nil
 	case time.Time:
 		return append(types, myTypeDatetime, 0), appendDatetime(values, inLocation(v, loc)), nil
 	case bool:

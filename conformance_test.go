@@ -1184,3 +1184,89 @@ func confCompressConn(t *testing.T, need int) *gomysql.Conn {
 
 	return c
 }
+
+// Prepare of the same text returns the cached statement; beyond the cache
+// the least recently used are deallocated on the server and prepared again
+// when executed.
+func TestConformanceStmtCache(t *testing.T) {
+	t.Parallel()
+
+	c := confConn(t, "b", "b")
+
+	first, err := c.Prepare("SELECT ?")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if again, err := c.Prepare("SELECT ?"); err != nil || again != first {
+		t.Fatalf("Prepare of the same text: %p, %v; want %p", again, err, first)
+	}
+
+	const n = 300 // more than a connection's share of max_prepared_stmt_count
+
+	for i := range n {
+		st, err := c.Prepare(fmt.Sprintf("SELECT ? + %d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var got int
+		if err := st.QueryRow(1).Scan(&got); err != nil || got != i+1 {
+			t.Fatalf("statement %d: %d, %v", i, got, err)
+		}
+	}
+
+	var got int
+	if err := first.QueryRow(7).Scan(&got); err != nil || got != 7 {
+		t.Fatalf("the evicted first statement: %d, %v", got, err)
+	}
+
+	var (
+		name   string
+		closed int
+	)
+
+	if err := c.QueryRow("SHOW SESSION STATUS LIKE 'Com_stmt_close'").Scan(&name, &closed); err != nil {
+		t.Fatal(err)
+	}
+
+	if closed < 100 {
+		t.Errorf("Com_stmt_close = %d: the evicted statements were not deallocated", closed)
+	}
+
+	t.Logf("Com_stmt_close = %d", closed)
+}
+
+// A cached statement outlives its table: binary data stays whole after
+// the table is recreated twice with other column types (MySQL 8 converted
+// a MYSQL_TYPE_STRING parameter in the character set of the old column).
+func TestConformanceStmtRecreatedTable(t *testing.T) {
+	t.Parallel()
+
+	c := confConn(t, "b", "b")
+	defer func() { _, _ = c.Exec("DROP TABLE IF EXISTS stmt_recreated") }()
+
+	var st *gomysql.Stmt
+
+	for _, step := range []struct {
+		typ string
+		arg any
+	}{{"BIGINT", 0}, {"VARCHAR(64)", "x"}, {"VARBINARY(8)", []byte{0, 0xff, 'a'}}} {
+		mustExec(t, c, "DROP TABLE IF EXISTS stmt_recreated")
+		mustExec(t, c, "CREATE TABLE stmt_recreated (id INT PRIMARY KEY, v "+step.typ+") DEFAULT CHARSET=utf8mb4")
+
+		var err error
+		if st, err = c.Prepare("INSERT INTO stmt_recreated VALUES (1, ?)"); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := st.Exec(step.arg); err != nil {
+			t.Fatalf("%s: %v", step.typ, err)
+		}
+	}
+
+	var got []byte
+	if err := c.QueryRow("SELECT v FROM stmt_recreated").Scan(&got); err != nil || string(got) != "\x00\xffa" {
+		t.Errorf("stored %q, %v; want %q", got, err, "\x00\xffa")
+	}
+}

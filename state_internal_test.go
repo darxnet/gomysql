@@ -20,8 +20,11 @@ func stateServer(t *testing.T) Config {
 	t.Helper()
 
 	return newFakeServer(t, true, func(c *fakeConn, cmd byte, payload []byte) error {
-		if cmd == comPing {
+		switch cmd {
+		case comPing:
 			return c.ok()
+		case comStmtPrepare:
+			return c.prepareOK(1, nil)
 		}
 
 		switch string(payload) {
@@ -152,8 +155,8 @@ func TestConnBroken(t *testing.T) {
 	}
 }
 
-// Rows and statements of a connection before Reconnect are refused, not
-// read from the new one.
+// Rows of a connection before Reconnect are refused, not read from the
+// new one; its statements are prepared again.
 func TestConnStale(t *testing.T) {
 	t.Parallel()
 
@@ -163,12 +166,15 @@ func TestConnStale(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	rows, err := conn.Query("rows")
+	stmt, err := conn.Prepare("stmt")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	stmt := &Stmt{conn: conn, session: conn.session}
+	rows, err := conn.Query("rows")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if err := conn.Reconnect(); err != nil {
 		t.Fatal(err)
@@ -182,7 +188,7 @@ func TestConnStale(t *testing.T) {
 		t.Errorf("old rows Close: %v", err)
 	}
 
-	if _, err := stmt.Exec(); !errors.Is(err, errStaleStmt) {
+	if _, err := stmt.Exec(); err != nil {
 		t.Errorf("old statement: %v", err)
 	}
 

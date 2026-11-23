@@ -45,9 +45,21 @@ func (conn *Conn) simpleCommand(com byte, arg string) error {
 
 const comInitDB byte = 0x02
 
-// UseDatabase makes name the default database (COM_INIT_DB).
+// UseDatabase makes name the default database (COM_INIT_DB). The
+// statements prepared before are deallocated: a statement keeps the
+// database it was prepared in, so they are prepared again in name when
+// executed. A USE statement does not do this.
 func (conn *Conn) UseDatabase(name string) error {
-	return simpleCommand(context.Background(), conn, comInitDB, name)
+	if err := conn.begin(context.Background()); err != nil {
+		return err
+	}
+
+	err := conn.simpleCommand(comInitDB, name)
+	if err == nil {
+		err = conn.evictStmts()
+	}
+
+	return conn.end(err)
 }
 
 const comStatistics byte = 0x08
