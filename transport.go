@@ -250,6 +250,11 @@ func writePackets[T string | []byte](conn *Conn, com []byte, arg T) error {
 	return nil
 }
 
+// errorAfterWriteWait is how long errorAfterWrite waits for the error. The
+// server sends it before it closes the connection, so it has arrived when
+// the write fails: 4-65 µs on local servers.
+const errorAfterWriteWait = 100 * time.Millisecond
+
 // errorAfterWrite returns the error the server sent before it closed the
 // connection, such as 1153 ER_NET_PACKET_TOO_LARGE for a packet larger
 // than max_allowed_packet, or else err. Not after a deadline or a canceled
@@ -259,7 +264,7 @@ func (conn *Conn) errorAfterWrite(err error) error {
 		return err
 	}
 
-	_ = conn.conn.SetReadDeadline(time.Now().Add(time.Second))
+	_ = conn.conn.SetReadDeadline(time.Now().Add(errorAfterWriteWait))
 
 	buf, rerr := conn.reader.next(headerSize)
 	if rerr != nil {
