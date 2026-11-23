@@ -116,7 +116,7 @@ func (conn *Conn) interpolate(query string, args []any) (string, error) {
 		collation:   conn.config.Collation,
 	}
 
-	buf := make([]byte, 0, len(query)+16*len(args))
+	buf := make([]byte, 0, len(query)+literalsSize(args))
 
 	for i := 0; i < len(query); {
 		// Copy what can start neither a placeholder nor what skipNonCode
@@ -445,4 +445,143 @@ func appendTimeLiteral(buf []byte, t time.Time) []byte {
 	}
 
 	return append(buf, '\'')
+}
+
+// literalsSize is the size of args as SQL literals: for strings and
+// []byte as quotedSize, the longest literal of the type for other basic
+// types, element by element for slices. Values whose literal is
+// known only after conversion (driver.Valuer, pointers, named types, the
+// struct or map of :name arguments) count nothing: the buffer grows for
+// them, as calling Value twice could have effects.
+func literalsSize(args []any) int {
+	n := 0
+
+	for _, arg := range args {
+		if na, ok := arg.(sql.NamedArg); ok {
+			arg = na.Value
+		}
+
+		if size, ok := literalSize(arg); ok {
+			n += size
+
+			continue
+		}
+
+		if list, ok := expandable(arg); ok {
+			n += listSize(list)
+		}
+	}
+
+	return n
+}
+
+// The longest literals of numeric types: "-9223372036854775808",
+// "18446744073709551615", "-1.7976931348623157e+308", "-3.4028235e+38" and
+// the like.
+const (
+	maxInt8Literal    = 4
+	maxInt16Literal   = 6
+	maxInt32Literal   = 11
+	maxInt64Literal   = 20
+	maxUint8Literal   = 3
+	maxUint16Literal  = 5
+	maxUint32Literal  = 10
+	maxUint64Literal  = 20
+	maxFloat32Literal = 15
+	maxFloat64Literal = 24
+	maxTimeLiteral    = len("'2006-01-02 15:04:05.000000'")
+	nullLiteral       = len("NULL")
+	binaryPrefix      = len("_binary")
+)
+
+// literalSize is the size of arg, of a basic type, as a literal; false
+// for other types.
+func literalSize(arg any) (int, bool) {
+	switch v := arg.(type) {
+	case nil:
+		return nullLiteral, true
+	case int, int64:
+		return maxInt64Literal, true
+	case int8:
+		return maxInt8Literal, true
+	case int16:
+		return maxInt16Literal, true
+	case int32:
+		return maxInt32Literal, true
+	case uint, uint64:
+		return maxUint64Literal, true
+	case uint8:
+		return maxUint8Literal, true
+	case uint16:
+		return maxUint16Literal, true
+	case uint32:
+		return maxUint32Literal, true
+	case float32:
+		return maxFloat32Literal, true
+	case float64:
+		return maxFloat64Literal, true
+	case bool:
+		return 1, true
+	case string:
+		return quotedSize(v), true
+	case []byte:
+		if v == nil {
+			return nullLiteral, true
+		}
+
+		return binaryPrefix + quotedSize(v), true
+	case time.Time:
+		return maxTimeLiteral, true
+	}
+
+	return 0, false
+}
+
+// listSize is the size of the literals of a slice argument with ", "
+// between them.
+func listSize(list reflect.Value) int {
+	n := list.Len()
+	if n == 0 {
+		return 0
+	}
+
+	sep := 2 * (n - 1)
+
+	switch list.Type().Elem().Kind() { //nolint:exhaustive // other kinds count nothing
+	case reflect.String:
+		for i := range n {
+			sep += quotedSize(list.Index(i).String())
+		}
+
+		return sep
+	case reflect.Int, reflect.Int64, reflect.Uint, reflect.Uint64:
+		return sep + n*maxInt64Literal
+	case reflect.Int8:
+		return sep + n*maxInt8Literal
+	case reflect.Int16:
+		return sep + n*maxInt16Literal
+	case reflect.Int32:
+		return sep + n*maxInt32Literal
+	case reflect.Uint8:
+		return sep + n*maxUint8Literal
+	case reflect.Uint16:
+		return sep + n*maxUint16Literal
+	case reflect.Uint32:
+		return sep + n*maxUint32Literal
+	case reflect.Float32:
+		return sep + n*maxFloat32Literal
+	case reflect.Float64:
+		return sep + n*maxFloat64Literal
+	case reflect.Bool:
+		return sep + n
+	}
+
+	return sep
+}
+
+// quotedSize is the size of s quoted, with room for escaping one byte in
+// 16; more escapes grow the buffer. Counting them exactly takes another
+// pass over s, which costs more than the growth it saves.
+func quotedSize[T string | []byte](s T) int {
+	return len(s) + len(s)/16 + 2
 }

@@ -150,3 +150,44 @@ func FuzzInterpolate(f *testing.F) {
 }
 
 func ptrTo[T any](v T) *T { return &v }
+
+// literalsSize is never below the literals, but of strings escaping more
+// than one byte in 16.
+func TestLiteralsSize(t *testing.T) {
+	t.Parallel()
+
+	args := []any{
+		nil, math.MinInt64, int8(math.MinInt8), int16(math.MinInt16), int32(math.MinInt32), int64(math.MinInt64),
+		uint(math.MaxUint64), uint8(math.MaxUint8), uint16(math.MaxUint16), uint32(math.MaxUint32),
+		uint64(math.MaxUint64), float32(-math.MaxFloat32), float32(-math.SmallestNonzeroFloat32),
+		-math.MaxFloat64, -math.SmallestNonzeroFloat64, -1.2345678901234567e-300, true,
+		"plain", "a few ' escaped \\ in a long enough string", []byte("binary\x00 data of some length"), []byte(nil),
+		time.Date(2026, 11, 23, 10, 11, 12, 123456000, time.UTC), time.Time{},
+		[]int{-1, math.MinInt64}, []string{"a", "b"}, []float64{-math.MaxFloat64}, []bool{true, false},
+	}
+
+	for _, noBackslash := range []bool{false, true} {
+		e := escaper{loc: time.UTC, noBackslash: noBackslash}
+
+		for _, arg := range args {
+			lit, err := e.appendArg(nil, arg)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			size := literalsSize([]any{arg})
+			if size < len(lit) {
+				t.Errorf("%T %v: size %d < %d of %s", arg, arg, size, len(lit), lit)
+			}
+		}
+	}
+
+	// Known only after conversion: nothing.
+	if n := literalsSize([]any{new(int), sql.NullInt64{}, struct{ A int }{}}); n != 0 {
+		t.Errorf("converted values: %d", n)
+	}
+
+	if n := literalsSize([]any{sql.Named("a", "x")}); n != len(`'x'`) {
+		t.Errorf("sql.Named: %d", n)
+	}
+}
