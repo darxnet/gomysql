@@ -75,7 +75,7 @@ func (conn *Conn) growStmtCache(ctx context.Context) error {
 	return nil
 }
 
-// add caches stmt, just prepared, within the command: the statement it
+// addStmt caches stmt, just prepared, within the command: the statement it
 // replaces and the least recently used beyond the limit are deallocated
 // (COM_STMT_CLOSE, which has no response).
 func (conn *Conn) addStmt(stmt *Stmt) error {
@@ -108,6 +108,7 @@ func (conn *Conn) addStmt(stmt *Stmt) error {
 }
 
 // evictStmt removes stmt from the cache and deallocates it on the server.
+// The caller has synced the cache with the session, so conn.stmts is it.
 func (conn *Conn) evictStmt(stmt *Stmt) error {
 	conn.stmts.remove(stmt)
 

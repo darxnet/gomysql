@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
+	"fmt"
 	"io"
 	"strconv"
 	"strings"
 	"testing"
 	"testing/iotest"
 	"time"
+
+	"github.com/darxnet/gomysql/internal/sqlhook"
 )
 
 // stateServer answers COM_QUERY by its text: "rows" with three rows,
@@ -841,6 +845,117 @@ func TestClosesConnection(t *testing.T) {
 
 		if got := closesConnection(e); got != tc.closes {
 			t.Errorf("%d %s: %v", tc.number, tc.state, got)
+		}
+	}
+}
+
+// RejectReadOnly breaks the connection on the errors of a read-only
+// server, and only on those.
+func TestRejectReadOnly(t *testing.T) {
+	t.Parallel()
+
+	errs := map[string]struct {
+		number uint16
+		msg    string
+	}{
+		"ro":        {1290, "The MySQL server is running with the --read-only option"},
+		"super":     {1290, "The MySQL server is running with the --super-read-only option"},
+		"mode":      {1836, "Running in read-only mode"},
+		"file":      {1290, "The MySQL server is running with the --secure-file-priv option"},
+		"rotx":      {1792, "Cannot execute statement in a READ ONLY transaction."},
+		"duplicate": {1062, "Duplicate entry"},
+	}
+
+	cfg := newFakeServer(t, true, func(c *fakeConn, cmd byte, payload []byte) error {
+		if e, ok := errs[string(payload)]; ok && cmd == comQuery {
+			return c.errPacket(e.number, "HY000", e.msg)
+		}
+
+		return c.ok()
+	}).config()
+
+	for _, reject := range []bool{false, true} {
+		cfg.RejectReadOnly = reject
+
+		for name := range errs {
+			conn, err := Connect(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = conn.Exec(name)
+
+			var serverErr *Error
+			if !errors.As(err, &serverErr) {
+				t.Fatalf("%s: %v", name, err)
+			}
+
+			broken := reject && (name == "ro" || name == "super" || name == "mode")
+			if errors.Is(err, ErrBadConn) != broken || (conn.Ping() != nil) != broken {
+				t.Errorf("RejectReadOnly %v, %s: %v, want broken %v", reject, name, err, broken)
+			}
+
+			_ = conn.Close()
+		}
+	}
+}
+
+// sqldriver learns from RefusedReadOnly which errors of a broken
+// connection it may retry: those of a read-only server, wrapped or not.
+func TestRefusedReadOnlyHook(t *testing.T) {
+	t.Parallel()
+
+	ro := &Error{Number: 1290, Message: "running with the --read-only option"}
+
+	switch {
+	case !sqlhook.RefusedReadOnly(fmt.Errorf("%w: %w", ro, ErrBadConn)):
+		t.Error("1290 read-only")
+	case !sqlhook.RefusedReadOnly(&Error{Number: 1836}):
+		t.Error("1836")
+	case sqlhook.RefusedReadOnly(&Error{Number: 1290, Message: "running with the --secure-file-priv option"}):
+		t.Error("1290 secure-file-priv")
+	case sqlhook.RefusedReadOnly(ErrBadConn):
+		t.Error("not a server error")
+	}
+}
+
+// The scans of sqldriver without a current row (after the end, after
+// Close) report it and leave a good connection good.
+func TestHooksWithoutRow(t *testing.T) {
+	t.Parallel()
+
+	conn, err := Connect(stateServer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	for _, closeEarly := range []bool{false, true} {
+		rows, err := conn.Query("rows")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if closeEarly {
+			rows.Next()
+			_ = rows.Close()
+		} else {
+			for rows.Next() { //nolint:revive // to the end
+			}
+		}
+
+		dest := make([]driver.Value, 1)
+		if err := sqlhook.Values(rows, dest); !errors.Is(err, errNoRow) {
+			t.Errorf("Values, closed early %v: %v", closeEarly, err)
+		}
+
+		var s string
+		if _, _, err := sqlhook.ScanColumn(rows, 0, &s); !errors.Is(err, errNoRow) {
+			t.Errorf("ScanColumn, closed early %v: %v", closeEarly, err)
+		}
+
+		if err := conn.Ping(); err != nil {
+			t.Errorf("Ping, closed early %v: %v", closeEarly, err)
 		}
 	}
 }

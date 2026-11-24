@@ -32,21 +32,8 @@ func (conn *Conn) Query(query string, args ...any) (*Rows, error) {
 // read or closed: canceling it interrupts the query and breaks the
 // connection.
 func (conn *Conn) QueryContext(ctx context.Context, query string, args ...any) (*Rows, error) {
-	if len(args) > 0 {
-		var err error
-
-		query, err = conn.interpolate(query, args)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	if err := conn.begin(ctx); err != nil {
+	if err := conn.sendQuery(ctx, query, args); err != nil {
 		return nil, err
-	}
-
-	if err := writeCommand(conn, comQuery, query); err != nil {
-		return nil, conn.end(err)
 	}
 
 	n, err := conn.readResultHeader()
@@ -62,6 +49,29 @@ func (conn *Conn) QueryContext(ctx context.Context, query string, args ...any) (
 	}
 
 	return conn.openRows(rows), nil
+}
+
+// sendQuery starts a command and sends query with args interpolated
+// (COM_QUERY); on success the command runs until end.
+func (conn *Conn) sendQuery(ctx context.Context, query string, args []any) error {
+	if len(args) > 0 {
+		var err error
+
+		query, err = conn.interpolate(query, args)
+		if err != nil {
+			return err
+		}
+	}
+
+	if err := conn.begin(ctx); err != nil {
+		return err
+	}
+
+	if err := writeCommand(conn, comQuery, query); err != nil {
+		return conn.end(err)
+	}
+
+	return nil
 }
 
 // QueryRow runs query like Query and returns the first row; Row.Scan
@@ -103,21 +113,8 @@ func (conn *Conn) Exec(query string, args ...any) (*Result, error) {
 // ExecContext is Exec within ctx: canceling it interrupts the statement
 // and breaks the connection.
 func (conn *Conn) ExecContext(ctx context.Context, query string, args ...any) (*Result, error) {
-	if len(args) > 0 {
-		var err error
-
-		query, err = conn.interpolate(query, args)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	if err := conn.begin(ctx); err != nil {
+	if err := conn.sendQuery(ctx, query, args); err != nil {
 		return nil, err
-	}
-
-	if err := writeCommand(conn, comQuery, query); err != nil {
-		return nil, conn.end(err)
 	}
 
 	result, err := conn.readResult()

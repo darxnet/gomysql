@@ -11,11 +11,13 @@ package gomysql_test
 // GOMYSQL_KNOWN_BUGS=1 to run them anyway.
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -1268,6 +1270,120 @@ func TestConformanceStmtRecreatedTable(t *testing.T) {
 	var got []byte
 	if err := c.QueryRow("SELECT v FROM stmt_recreated").Scan(&got); err != nil || string(got) != "\x00\xffa" {
 		t.Errorf("stored %q, %v; want %q", got, err, "\x00\xffa")
+	}
+}
+
+// A DOUBLE after a FLOAT in one row is a float64: the decoder cleared the
+// float32 flag only for FLOAT, so the DOUBLE came out as a float32.
+func TestConformanceFloatThenDouble(t *testing.T) {
+	t.Parallel()
+
+	c := confConn(t, "b", "b")
+	mustExec(t, c, "CREATE TEMPORARY TABLE float_double (f FLOAT, d DOUBLE)")
+	mustExec(t, c, "INSERT INTO float_double VALUES (1.5, 1e300)")
+
+	for _, m := range confModes {
+		rows, err := m.query(c, "SELECT f, d FROM float_double")
+		if err != nil {
+			t.Fatalf("%s: %v", m.name, err)
+		}
+
+		var f, d any
+		if !rows.Next() || rows.Scan(&f, &d) != nil {
+			t.Fatalf("%s: no row", m.name)
+		}
+
+		_ = rows.Close()
+
+		if _, ok := f.(float32); !ok || d != any(1e300) {
+			t.Errorf("%s: FLOAT %T %v, DOUBLE %T %v", m.name, f, f, d, d)
+		}
+	}
+}
+
+// MySQL 8.0.22 and later keep the type a parameter had in an earlier
+// execution of a statement and convert later arguments to it: a string
+// after an integer came back as 0, anything after a DATETIME as a zero or
+// garbage date, a large integer after a DOUBLE rounded. The client
+// prepares the statement again when the class of a type changes, also for
+// another Prepare of the same text, which the cache shares: every pair of
+// classes gives what a new statement gives.
+func TestConformanceStmtTypeChanges(t *testing.T) {
+	t.Parallel()
+
+	c := confConn(t, "b", "b")
+
+	args := []any{
+		int64(5), uint64(1 << 63), int64(math.MaxInt64 - 1), 1.5, float32(2.5), "abc", "12",
+		[]byte("xyz"), true, time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC), nil,
+	}
+
+	fresh := 0
+
+	scan := func(st *gomysql.Stmt, arg any) string {
+		var got any
+		if err := st.QueryRow(arg).Scan(&got); err != nil {
+			return "error " + err.Error()
+		}
+
+		if b, ok := got.([]byte); ok {
+			got = string(b)
+		}
+
+		return fmt.Sprintf("%T %v", got, got)
+	}
+
+	for _, first := range args {
+		for _, second := range args {
+			shared, err := c.Prepare("SELECT ?")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			_ = scan(shared, first)
+			got := scan(shared, second)
+
+			fresh++
+
+			once, err := c.Prepare(fmt.Sprintf("SELECT ? /* %d */", fresh))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if want := scan(once, second); got != want {
+				t.Errorf("%T %v after %T %v: %s, want %s", second, second, first, first, got, want)
+			}
+		}
+	}
+}
+
+// A command that does not start keeps the types the server knows: the
+// next execution still sees the change.
+func TestConformanceStmtTypeChangeNotSent(t *testing.T) {
+	t.Parallel()
+
+	c := confConn(t, "b", "b")
+
+	st, err := c.Prepare("SELECT ? /* not sent */")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var n int64
+	if err := st.QueryRow(int64(5)).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := st.ExecContext(ctx, "abc"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled: %v", err)
+	}
+
+	var s string
+	if err := st.QueryRow("abc").Scan(&s); err != nil || s != "abc" {
+		t.Errorf("after a canceled execution: %q, %v", s, err)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/darxnet/gomysql"
+	"github.com/darxnet/gomysql/sqldriver"
 	_ "github.com/go-sql-driver/mysql"
 )
 
@@ -51,6 +52,24 @@ func openCC(b *testing.B) *gomysql.Conn {
 	b.Cleanup(func() { _ = c.Close() })
 
 	return c
+}
+
+// openAdapter opens gomysql through database/sql, as openStd does
+// go-sql-driver.
+func openAdapter(b *testing.B) *sql.DB {
+	db := sql.OpenDB(sqldriver.NewConnector(gomysql.Config{
+		Network: "tcp", Address: benchAddr(b), User: "b", Password: "b", Database: "gomysql",
+		AllowPublicKeyRetrieval: true,
+	}))
+
+	db.SetMaxOpenConns(1)
+	b.Cleanup(func() { _ = db.Close() })
+
+	if err := db.Ping(); err != nil {
+		b.Fatal(err)
+	}
+
+	return db
 }
 
 func openStd(b *testing.B) *sql.DB {
@@ -132,8 +151,8 @@ func benchCC(b *testing.B, q string, dest ...any) {
 	report(b, total, cpu0)
 }
 
-func benchStdPrepared(b *testing.B, q string, dest ...any) {
-	db := openStd(b)
+func benchStdPrepared(b *testing.B, open func(*testing.B) *sql.DB, q string, dest ...any) {
+	db := open(b)
 	total := 0
 	cpu0 := cpuTime()
 
@@ -157,8 +176,8 @@ func benchStdPrepared(b *testing.B, q string, dest ...any) {
 	report(b, total, cpu0)
 }
 
-func benchStdText(b *testing.B, q string, dest ...any) {
-	db := openStd(b)
+func benchStdText(b *testing.B, open func(*testing.B) *sql.DB, q string, dest ...any) {
+	db := open(b)
 	total := 0
 	cpu0 := cpuTime()
 
@@ -184,8 +203,10 @@ func BenchmarkDriverInts(b *testing.B) {
 	)
 
 	b.Run("gomysql", func(b *testing.B) { benchCC(b, qAU, &aud, &user, &keep) })
-	b.Run("std-prepared", func(b *testing.B) { benchStdPrepared(b, qAU, &aud, &user, &keep) })
-	b.Run("std-text", func(b *testing.B) { benchStdText(b, qAU, &aud, &user, &keep) })
+	b.Run("std-prepared", func(b *testing.B) { benchStdPrepared(b, openStd, qAU, &aud, &user, &keep) })
+	b.Run("std-text", func(b *testing.B) { benchStdText(b, openStd, qAU, &aud, &user, &keep) })
+	b.Run("sqldriver-prepared", func(b *testing.B) { benchStdPrepared(b, openAdapter, qAU, &aud, &user, &keep) })
+	b.Run("sqldriver-text", func(b *testing.B) { benchStdText(b, openAdapter, qAU, &aud, &user, &keep) })
 }
 
 func BenchmarkDriverRawBytes(b *testing.B) {
@@ -197,8 +218,10 @@ func BenchmarkDriverRawBytes(b *testing.B) {
 	)
 
 	b.Run("gomysql", func(b *testing.B) { benchCC(b, qCM, &id, &ext, &ts, &keep) })
-	b.Run("std-prepared", func(b *testing.B) { benchStdPrepared(b, qCM, &id, &ext, &ts, &keep) })
-	b.Run("std-text", func(b *testing.B) { benchStdText(b, qCM, &id, &ext, &ts, &keep) })
+	b.Run("std-prepared", func(b *testing.B) { benchStdPrepared(b, openStd, qCM, &id, &ext, &ts, &keep) })
+	b.Run("std-text", func(b *testing.B) { benchStdText(b, openStd, qCM, &id, &ext, &ts, &keep) })
+	b.Run("sqldriver-prepared", func(b *testing.B) { benchStdPrepared(b, openAdapter, qCM, &id, &ext, &ts, &keep) })
+	b.Run("sqldriver-text", func(b *testing.B) { benchStdText(b, openAdapter, qCM, &id, &ext, &ts, &keep) })
 }
 
 func BenchmarkDriverString(b *testing.B) {
@@ -210,6 +233,45 @@ func BenchmarkDriverString(b *testing.B) {
 	)
 
 	b.Run("gomysql", func(b *testing.B) { benchCC(b, qCM, &id, &ext, &ts, &keep) })
-	b.Run("std-prepared", func(b *testing.B) { benchStdPrepared(b, qCM, &id, &ext, &ts, &keep) })
-	b.Run("std-text", func(b *testing.B) { benchStdText(b, qCM, &id, &ext, &ts, &keep) })
+	b.Run("std-prepared", func(b *testing.B) { benchStdPrepared(b, openStd, qCM, &id, &ext, &ts, &keep) })
+	b.Run("std-text", func(b *testing.B) { benchStdText(b, openStd, qCM, &id, &ext, &ts, &keep) })
+	b.Run("sqldriver-prepared", func(b *testing.B) { benchStdPrepared(b, openAdapter, qCM, &id, &ext, &ts, &keep) })
+	b.Run("sqldriver-text", func(b *testing.B) { benchStdText(b, openAdapter, qCM, &id, &ext, &ts, &keep) })
+}
+
+func BenchmarkDriverNull(b *testing.B) {
+	var (
+		aud  sql.NullInt64
+		user sql.NullInt64
+		keep sql.NullInt64
+	)
+
+	b.Run("std-text", func(b *testing.B) { benchStdText(b, openStd, qAU, &aud, &user, &keep) })
+	b.Run("sqldriver-text", func(b *testing.B) { benchStdText(b, openAdapter, qAU, &aud, &user, &keep) })
+}
+
+func BenchmarkDriverAny(b *testing.B) {
+	var aud, user, keep any
+
+	b.Run("std-text", func(b *testing.B) { benchStdText(b, openStd, qAU, &aud, &user, &keep) })
+	b.Run("sqldriver-text", func(b *testing.B) { benchStdText(b, openAdapter, qAU, &aud, &user, &keep) })
+}
+
+func BenchmarkDriverPoint(b *testing.B) {
+	for _, c := range []struct {
+		name string
+		open func(*testing.B) *sql.DB
+	}{{"std", openStd}, {"sqldriver", openAdapter}} {
+		b.Run(c.name, func(b *testing.B) {
+			db := c.open(b)
+			var id uint64
+			var ext string
+			b.ReportAllocs()
+			for b.Loop() {
+				if err := db.QueryRow("SELECT id, ext FROM cm WHERE id = ?", 1).Scan(&id, &ext); err != nil && err != sql.ErrNoRows {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }

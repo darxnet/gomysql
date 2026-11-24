@@ -35,6 +35,11 @@ type Rows struct {
 	direct     bool
 	dest       []any
 	destOf     any
+
+	// sqldriver: the column ScanColumn reads next; i is -1 at a new row,
+	// and the zero value before the first Next is never read, for startRow
+	// refuses a scan without a row.
+	cur rowCursor
 }
 
 // errRowsGone is the error of Rows whose connection was closed or
@@ -88,7 +93,7 @@ func (rows *Rows) Next() bool {
 	case buf[0] == iERR:
 		rows.err = rows.conn.processERRPacket(buf)
 	default:
-		rows.buf, rows.text = buf, rows.text[:0]
+		rows.buf, rows.text, rows.cur.i = buf, rows.text[:0], -1
 
 		return true
 	}
@@ -101,7 +106,7 @@ func (rows *Rows) Next() bool {
 // end ends the rows at their last packet or an error. More results are
 // read by Close.
 func (rows *Rows) end() {
-	rows.buf, rows.done = nil, true
+	rows.buf, rows.done, rows.cur = nil, true, rowCursor{i: -1}
 
 	if rows.err != nil || rows.conn.statusFlags&serverStatusMoreResultsExists == 0 {
 		rows.err = rows.release(rows.err)

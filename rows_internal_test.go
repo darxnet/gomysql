@@ -447,7 +447,7 @@ func TestArgsLocation(t *testing.T) {
 
 	// Binary: DATETIME, length 7, the wall clock in loc.
 	for loc, hour := range map[*time.Location]byte{nil: 13, time.UTC: 13, kyiv: 15} {
-		_, values, err := appendParam(nil, nil, arg, loc)
+		_, values, err := appendParam(nil, arg, loc)
 		if err != nil || values[0] != 7 || values[5] != hour {
 			t.Errorf("binary in %v: %v, %v; want hour %d", loc, values, err, hour)
 		}

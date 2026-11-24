@@ -257,8 +257,9 @@ const errorAfterWriteWait = 100 * time.Millisecond
 
 // errorAfterWrite returns the error the server sent before it closed the
 // connection, such as 1153 ER_NET_PACKET_TOO_LARGE for a packet larger
-// than max_allowed_packet, or else err. Not after a deadline or a canceled
-// context, which must not wait.
+// than max_allowed_packet, or else err. Rarely the reset of the
+// connection overtakes the error, and the kernel drops it: then err. Not
+// after a deadline or a canceled context, which must not wait.
 func (conn *Conn) errorAfterWrite(err error) error {
 	if errors.Is(err, os.ErrDeadlineExceeded) || conn.ctx != nil && conn.ctx.Err() != nil {
 		return err

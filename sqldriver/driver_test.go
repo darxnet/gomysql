@@ -1,0 +1,447 @@
+package sqldriver_test
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"math"
+	"os"
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/darxnet/gomysql"
+	"github.com/darxnet/gomysql/sqldriver"
+)
+
+func liveConfig(t *testing.T, user string) gomysql.Config {
+	t.Helper()
+
+	addr := os.Getenv("GOMYSQL_ADDR")
+	if addr == "" {
+		t.Skip("GOMYSQL_ADDR not set")
+	}
+
+	return gomysql.Config{
+		Network: "tcp", Address: addr, User: user, Password: user, Database: "gomysql",
+		AllowPublicKeyRetrieval: true,
+	}
+}
+
+func openDB(t *testing.T) *sql.DB {
+	t.Helper()
+
+	db := sql.OpenDB(sqldriver.NewConnector(liveConfig(t, "b")))
+	t.Cleanup(func() { _ = db.Close() })
+
+	return db
+}
+
+func TestOpenDSN(t *testing.T) {
+	t.Parallel()
+
+	config := liveConfig(t, "b")
+
+	db, err := sql.Open("gomysql", "b:b@tcp("+config.Address+")/gomysql?allowPublicKeyRetrieval=true&"+
+		"time_zone=%27%2B02:00%27")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	var zone string
+	if err := db.QueryRow("SELECT @@session.time_zone").Scan(&zone); err != nil || zone != "+02:00" {
+		t.Errorf("time_zone %q, %v", zone, err)
+	}
+
+	if _, err := sql.Open("gomysql", "/db?parseTime=true"); err == nil {
+		t.Error("parseTime accepted")
+	}
+}
+
+func TestArgsAndValues(t *testing.T) {
+	t.Parallel()
+
+	db := openDB(t)
+
+	var (
+		u       uint64
+		name    string
+		in      int
+		null    sql.NullString
+		when    time.Time
+		anyInt  any
+		anyText any
+		anyJSON any
+	)
+
+	err := db.QueryRow(`SELECT ? + 0, ?, (SELECT COUNT(*) FROM (SELECT 1 a UNION SELECT 2 UNION SELECT 3) t
+		WHERE a IN (?)), NULL, CAST('2026-11-24 10:11:12' AS DATETIME), 42, 'text', JSON_OBJECT('a', 1)`,
+		uint64(math.MaxUint64), "it's", []int{1, 3}).
+		Scan(&u, &name, &in, &null, &when, &anyInt, &anyText, &anyJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var named string
+	if err := db.QueryRow("SELECT :a", sql.Named("a", "named")).Scan(&named); err != nil || named != "named" {
+		t.Errorf("sql.Named: %q, %v", named, err)
+	}
+
+	switch {
+	case u != math.MaxUint64 || name != "it's" || in != 2 || null.Valid:
+		t.Errorf("%d %q %d %v", u, name, in, null)
+	case !when.Equal(time.Date(2026, 11, 24, 10, 11, 12, 0, time.UTC)):
+		t.Errorf("time %v", when)
+	case reflect.TypeOf(anyInt) != reflect.TypeFor[int64]() || reflect.TypeOf(anyText) != reflect.TypeFor[[]byte]():
+		t.Errorf("any: %T %T, want int64 and []byte as the text protocol gives them too", anyInt, anyText)
+	case reflect.TypeOf(anyJSON) != reflect.TypeFor[[]byte]():
+		t.Errorf("JSON as %T", anyJSON)
+	}
+}
+
+func TestExecPrepareTx(t *testing.T) {
+	t.Parallel()
+
+	db := openDB(t)
+
+	table := fmt.Sprintf("sqldriver_t%d", time.Now().UnixNano())
+
+	if _, err := db.Exec("CREATE TABLE " + table + " (id INT AUTO_INCREMENT PRIMARY KEY, v VARCHAR(20))"); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _, _ = db.Exec("DROP TABLE " + table) })
+
+	res, err := db.Exec("INSERT INTO "+table+" (v) VALUES (?), (?)", "a", "b") //nolint:gosec // test table name
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if n, rerr := res.RowsAffected(); rerr != nil || n != 2 {
+		t.Errorf("RowsAffected %d, %v", n, rerr)
+	}
+
+	st, err := db.Prepare("SELECT v FROM " + table + " WHERE id = ?") //nolint:gosec // test table name
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var v string
+	if serr := st.QueryRow(id).Scan(&v); serr != nil || v != "a" {
+		t.Errorf("prepared: %q, %v", v, serr)
+	}
+
+	tx, err := db.BeginTx(context.Background(), &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, txErr := tx.Exec("DELETE FROM " + table); txErr != nil { //nolint:gosec // test table name
+		t.Fatal(txErr)
+	}
+
+	if rbErr := tx.Rollback(); rbErr != nil {
+		t.Fatal(rbErr)
+	}
+
+	var n int
+	if cErr := db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&n); cErr != nil || n != 2 {
+		t.Errorf("after the rollback: %d, %v", n, cErr)
+	}
+
+	// A statement without rows through Query.
+	rows, err := db.Query("DO 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	if rows.Next() || rows.Err() != nil {
+		t.Errorf("Query without rows: %v", rows.Err())
+	}
+}
+
+func TestColumnTypesAndRaw(t *testing.T) {
+	t.Parallel()
+
+	db := openDB(t)
+
+	rows, err := db.Query("SELECT CAST(1.5 AS DECIMAL(5,2)) AS d, 'x' AS s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	types, err := rows.ColumnTypes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for rows.Next() { //nolint:revive // read to the end for Err
+	}
+
+	if rows.Err() != nil {
+		t.Fatal(rows.Err())
+	}
+
+	if p, s, ok := types[0].DecimalSize(); !ok || p != 5 || s != 2 || types[0].DatabaseTypeName() != "DECIMAL" {
+		t.Errorf("DECIMAL: %d %d %v %s", p, s, ok, types[0].DatabaseTypeName())
+	}
+
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	err = conn.Raw(func(dc any) error {
+		c, ok := dc.(interface{ Conn() *gomysql.Conn })
+		if !ok {
+			return errors.New("no Conn method")
+		}
+
+		return c.Conn().Ping()
+	})
+	if err != nil {
+		t.Errorf("Raw: %v", err)
+	}
+}
+
+// A connection the server closed while idle in the pool is pinged before
+// reuse and replaced: the statement runs on a new one.
+func TestKilledIdleConn(t *testing.T) {
+	t.Parallel()
+
+	db := openDB(t)
+	db.SetMaxOpenConns(1)
+
+	var id int64
+	if err := db.QueryRow("SELECT CONNECTION_ID()").Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+
+	admin, err := gomysql.Connect(liveConfig(t, "root"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = admin.Close() }()
+
+	if _, err := admin.Exec("KILL ?", id); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(1100 * time.Millisecond) // over pingAfter, a second
+
+	var other int64
+	if err := db.QueryRow("SELECT CONNECTION_ID()").Scan(&other); err != nil || other == id {
+		t.Errorf("after KILL: %d, %v", other, err)
+	}
+}
+
+// Bytes point into the row: database/sql copies them into []byte and
+// string, so values of earlier rows stay, in both protocols.
+func TestBytesCopied(t *testing.T) {
+	t.Parallel()
+
+	db := openDB(t)
+
+	const q = "SELECT CONCAT('text-', n), CAST(CONCAT('bin-', n) AS BINARY), CAST(n AS DECIMAL(5,1)) " +
+		"FROM (SELECT 1 n UNION SELECT 2 UNION SELECT 3) t ORDER BY n"
+
+	st, err := db.Prepare(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	for name, query := range map[string]func() (*sql.Rows, error){
+		"text":   func() (*sql.Rows, error) { return db.Query(q) },
+		"binary": func() (*sql.Rows, error) { return st.Query() },
+	} {
+		rows, err := query()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var (
+			texts []string
+			bins  [][]byte
+			raws  []string
+		)
+
+		for rows.Next() {
+			var (
+				text string
+				bin  []byte
+				raw  sql.RawBytes
+			)
+
+			if err := rows.Scan(&text, &bin, &raw); err != nil {
+				t.Fatal(err)
+			}
+
+			texts, bins, raws = append(texts, text), append(bins, bin), append(raws, string(raw))
+		}
+
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := rows.Close(); err != nil { //nolint:sqlclosecheck // closed in the loop, each its own rows
+			t.Fatal(err)
+		}
+
+		for i := range 3 {
+			n := string(rune('1' + i))
+			if texts[i] != "text-"+n || string(bins[i]) != "bin-"+n || raws[i] != n+".0" {
+				t.Errorf("%s row %d: %q %q %q", name, i, texts[i], bins[i], raws[i])
+			}
+		}
+	}
+}
+
+// A canceled Ping returns the error of its context and leaves a good
+// connection usable.
+func TestPingCanceled(t *testing.T) {
+	t.Parallel()
+
+	db := openDB(t)
+
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := conn.PingContext(ctx); !errors.Is(err, context.Canceled) {
+		t.Errorf("canceled Ping: %v", err)
+	}
+
+	if err := conn.PingContext(context.Background()); err != nil {
+		t.Errorf("Ping after: %v", err)
+	}
+}
+
+// TIME comes as bytes: its scan type is string, which works.
+func TestTimeScanType(t *testing.T) {
+	t.Parallel()
+
+	db := openDB(t)
+
+	rows, err := db.Query("SELECT TIME '12:34:56'")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	types, err := rows.ColumnTypes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dest := reflect.New(types[0].ScanType())
+
+	if !rows.Next() {
+		t.Fatal(rows.Err())
+	}
+
+	if err := rows.Scan(dest.Interface()); err != nil || fmt.Sprint(dest.Elem().Interface()) != "12:34:56" {
+		t.Errorf("into %s: %v, %v", types[0].ScanType(), dest.Elem().Interface(), err)
+	}
+}
+
+// charset without collation runs SET NAMES, which binary takes too: a
+// collation of gomysql's own, binary_general_ci, does not exist.
+func TestCharsetDSN(t *testing.T) {
+	t.Parallel()
+
+	config := liveConfig(t, "b")
+
+	db, err := sql.Open("gomysql", "b:b@tcp("+config.Address+")/gomysql?allowPublicKeyRetrieval=true&charset=binary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	var charset string
+	if err := db.QueryRow("SELECT @@character_set_client").Scan(&charset); err != nil || charset != "binary" {
+		t.Errorf("character_set_client %q, %v", charset, err)
+	}
+}
+
+// A connection broken through sql.Conn.Raw is broken for database/sql
+// too: the next statement does not reach it.
+func TestRawBroken(t *testing.T) {
+	t.Parallel()
+
+	db := openDB(t)
+	db.SetMaxOpenConns(1)
+
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var id int64
+	if err := conn.QueryRowContext(context.Background(), "SELECT CONNECTION_ID()").Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+
+	// A deadline that passes mid-statement breaks the gomysql connection.
+	_ = conn.Raw(func(dc any) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+
+		_, err := dc.(interface{ Conn() *gomysql.Conn }).Conn().ExecContext(ctx, "DO SLEEP(2)")
+
+		return err
+	})
+
+	_ = conn.Close()
+
+	var other int64
+	if err := db.QueryRow("SELECT CONNECTION_ID()").Scan(&other); err != nil || other == id {
+		t.Errorf("after a break through Raw: %d, %v", other, err)
+	}
+}
+
+// Rows left open through sql.Conn.Raw make the connection invalid:
+// database/sql drops it instead of handing out a busy connection.
+func TestRawLeftRows(t *testing.T) {
+	t.Parallel()
+
+	db := openDB(t)
+	db.SetMaxOpenConns(1)
+
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_ = conn.Raw(func(dc any) error {
+		c := dc.(interface{ Conn() *gomysql.Conn }).Conn()
+
+		//nolint:sqlclosecheck,rowserrcheck,gocritic // left open on purpose
+		_, err := c.Query("SELECT 1 UNION SELECT 2")
+
+		return err
+	})
+
+	_ = conn.Close()
+
+	var n int
+	if err := db.QueryRow("SELECT 3").Scan(&n); err != nil || n != 3 {
+		t.Errorf("after rows left open: %d, %v", n, err)
+	}
+}
