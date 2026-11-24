@@ -17,7 +17,7 @@
 // them without a copy, []byte and string with one, and any gets []byte.
 //
 // Rows have one result set: the others, such as those of a CALL, are
-// read and dropped, and NextResultSet reports none.
+// read and dropped, so database/sql's NextResultSet reports none.
 //
 // driver.ErrBadConn, after which database/sql retries on another
 // connection, comes only when nothing ran: for a connection broken before
@@ -156,9 +156,10 @@ func (c *conn) done(err error) error {
 // started is done for the start of a statement: Exec, Query, Prepare or
 // Begin. One refused by a read-only server, with Config.RejectReadOnly,
 // gives driver.ErrBadConn: it did not run, so database/sql retries it on
-// a new connection, which may reach the new primary. Later refusals, as
-// while reading rows or at Commit, come as they are: work may have run.
-// (A procedure that ran in part before the refusal is retried too.)
+// a new connection, which may reach the new primary, outside a
+// transaction. Later refusals, as while reading rows or at Commit, come as
+// they are: work may have run. A procedure (CALL) refused after it wrote
+// is retried too: the server does not tell the two apart.
 func (c *conn) started(err error) error {
 	err = c.done(err)
 	if err != nil && c.broken() && sqlhook.RefusedReadOnly(err) {
@@ -245,8 +246,9 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 }
 
 // Ping returns driver.ErrBadConn for a dead connection, so that db.Ping
-// tries another one, but the error of ctx as it is: a canceled Ping does
-// not break a connection that was fine.
+// tries another one, but the error of ctx as it is. A context done before
+// the Ping leaves the connection as it was; one that ends during it breaks
+// the connection, as it ends any command.
 func (c *conn) Ping(ctx context.Context) error {
 	if err := c.ready(); err != nil {
 		return err
@@ -331,7 +333,7 @@ func (*stmt) NumInput() int { return -1 }
 
 // Exec and Query are of driver.Stmt; database/sql calls the Context ones.
 func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
-	return s.ExecContext(context.Background(), positional(args))
+	return s.exec(context.Background(), values(args))
 }
 
 func (s *stmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
@@ -352,14 +354,14 @@ func (s *stmt) exec(ctx context.Context, args []any) (driver.Result, error) {
 }
 
 func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
-	return s.QueryContext(context.Background(), positional(args))
+	return s.query(context.Background(), values(args))
 }
 
-// positional returns args as positional driver.NamedValue.
-func positional(args []driver.Value) []driver.NamedValue {
-	out := make([]driver.NamedValue, len(args))
+// values returns the arguments of Exec and Query for gomysql.
+func values(args []driver.Value) []any {
+	out := make([]any, len(args))
 	for i, a := range args {
-		out[i] = driver.NamedValue{Ordinal: i + 1, Value: a}
+		out[i] = a
 	}
 
 	return out
@@ -436,9 +438,16 @@ func (rs *rows) advance() error {
 	return io.EOF
 }
 
+// colType returns the type of column i, read on first use; an empty one
+// if the rows are closed, which database/sql does not ask about.
 func (rs *rows) colType(i int) *gomysql.ColumnType {
 	if rs.types == nil {
-		rs.types, _ = rs.r.ColumnTypes()
+		types, err := rs.r.ColumnTypes()
+		if err != nil || i >= len(types) {
+			return &gomysql.ColumnType{}
+		}
+
+		rs.types = types
 	}
 
 	return rs.types[i]

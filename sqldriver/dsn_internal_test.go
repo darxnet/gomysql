@@ -96,7 +96,7 @@ func TestParseDSNCharset(t *testing.T) {
 	}
 }
 
-func TestParseDSNStrict(t *testing.T) {
+func TestParseDSNAddressesAndNames(t *testing.T) {
 	t.Parallel()
 
 	for dsn, want := range map[string]string{
@@ -121,6 +121,9 @@ func TestParseDSNStrict(t *testing.T) {
 		"/db?%3Bx=1",                // not a variable name
 		"/db?a-b=1",
 		"/db?charset=utf8;x",
+		"tcp(h:)/db",      // empty port
+		"/db?timeout=-1s", // negative
+		"tcp(h)/my/db",    // unescaped /
 	} {
 		if _, _, err := parseDSN(dsn); err == nil {
 			t.Errorf("%s: no error", dsn)

@@ -25,9 +25,9 @@ type Stmt struct {
 	id         uint32
 	backslash  bool // whether backslashes escaped in sent
 
-	// numeric[i]: the last argument of parameter i that was not NULL was a
-	// number, the type MySQL 8 keeps for it (see retype).
-	numeric []bool
+	// classes[i]: the class of the last argument of parameter i that was
+	// not NULL, the type MySQL 8 keeps for it (see retype).
+	classes []byte
 }
 
 // Close does nothing: the statement stays in the cache of the connection,
@@ -244,9 +244,9 @@ func (stmt *Stmt) ExecContext(ctx context.Context, args ...any) (*Result, error)
 // statement again if it is no longer cached; on success the command runs
 // until end.
 func (stmt *Stmt) execute(ctx context.Context, args []any) error {
-	var scratch [64]byte
+	var scratch [256]byte
 
-	buf, retype, err := stmt.executePacket(scratch[:0], args)
+	buf, types, err := stmt.executePacket(scratch[:0], args)
 	if err != nil {
 		return err
 	}
@@ -263,7 +263,10 @@ func (stmt *Stmt) execute(ctx context.Context, args []any) error {
 		return err
 	}
 
-	if retype && stmt.session == conn.session {
+	// The command has started: the types reach the server. A change of
+	// type class needs a new statement on MySQL 8 (see retype); one no
+	// longer cached (session 0, as after evictStmt) is prepared anyway.
+	if types > 0 && stmt.retype(buf[types:types+2*len(stmt.params)]) && stmt.session == conn.session {
 		if err := conn.evictStmt(stmt); err != nil {
 			return conn.end(err)
 		}
@@ -284,16 +287,16 @@ func (stmt *Stmt) execute(ctx context.Context, args []any) error {
 	return nil
 }
 
-// executePacket appends COM_STMT_EXECUTE after the command byte to buf;
-// retype says the statement must be prepared again first.
-func (stmt *Stmt) executePacket(buf []byte, args []any) (packet []byte, retype bool, err error) {
+// executePacket appends COM_STMT_EXECUTE after the command byte to buf,
+// the types of the parameters at types, 0 without parameters.
+func (stmt *Stmt) executePacket(buf []byte, args []any) (packet []byte, types int, err error) {
 	args, err = stmt.bind(args)
 	if err != nil {
-		return nil, false, err
+		return nil, 0, err
 	}
 
 	if len(stmt.params) != len(args) {
-		return nil, false, errArgCount(len(stmt.params), len(args))
+		return nil, 0, errArgCount(len(stmt.params), len(args))
 	}
 
 	// COM_STMT_EXECUTE after the command byte: stmt-id, flags (no cursor),
@@ -302,42 +305,40 @@ func (stmt *Stmt) executePacket(buf []byte, args []any) (packet []byte, retype b
 	buf = append(buf, 0x00)
 	buf = binary.LittleEndian.AppendUint32(buf, 1)
 
-	if len(args) > 0 {
-		// NULL bitmap, then new-params-bound-flag, types and values
-		posNull := len(buf)
-		buf = append(buf, make([]byte, (len(args)+7)/8)...)
-		buf = append(buf, 0x01)
-
-		types := make([]byte, 0, len(args)*2)
-
-		var values []byte
-
-		for i, arg := range args {
-			if _, ok := expandable(arg); ok {
-				return nil, false, fmt.Errorf("argument %d: %w", i, errSliceInStmt)
-			}
-
-			v, err := convertArg(arg)
-			if err != nil {
-				return nil, false, fmt.Errorf("argument %d: %w", i, err)
-			}
-
-			if v == nil {
-				buf[posNull+i/8] |= 1 << (i % 8)
-			}
-
-			types, values, err = appendParam(types, values, v, stmt.conn.config.Location)
-			if err != nil {
-				return nil, false, err
-			}
-		}
-
-		retype = stmt.retype(types)
-		buf = append(buf, types...)
-		buf = append(buf, values...)
+	if len(args) == 0 {
+		return buf, 0, nil
 	}
 
-	return buf, retype, nil
+	// NULL bitmap, new-params-bound-flag, types (2 bytes each), values.
+	posNull := len(buf)
+	buf = append(buf, make([]byte, (len(args)+7)/8)...)
+	buf = append(buf, 0x01)
+	types = len(buf)
+	buf = append(buf, make([]byte, 2*len(args))...)
+
+	for i, arg := range args {
+		if _, ok := expandable(arg); ok {
+			return nil, 0, fmt.Errorf("argument %d: %w", i, errSliceInStmt)
+		}
+
+		v, err := convertArg(arg)
+		if err != nil {
+			return nil, 0, fmt.Errorf("argument %d: %w", i, err)
+		}
+
+		if v == nil {
+			buf[posNull+i/8] |= 1 << (i % 8)
+		}
+
+		var typ [2]byte
+		if typ, buf, err = appendParam(buf, v, stmt.conn.config.Location); err != nil {
+			return nil, 0, err
+		}
+
+		copy(buf[types+2*i:], typ[:])
+	}
+
+	return buf, types, nil
 }
 
 // bind returns the arguments of the placeholders in order.
@@ -395,31 +396,52 @@ func (stmt *Stmt) readColumns(n int) error {
 	return stmt.conn.readColumnsEOF()
 }
 
-// retype records the types of the arguments, pairs of type and flags, and
-// reports whether a string follows a number for some parameter. MySQL 8
-// keeps the type of a parameter from the first execution of a statement
-// and turns a later string into that number: "abc" comes back as 0. The
-// statement is then prepared again. NULL keeps the type; other changes,
-// such as a number after a string or an int after a float, convert
-// correctly.
+// Classes of parameter types for retype; 0 for NULL.
+const (
+	classInteger byte = iota + 1
+	classReal
+	classText
+	classDate
+)
+
+// typeClass returns the class of a parameter type byte.
+func typeClass(t byte) byte {
+	switch t {
+	case myTypeNull:
+		return 0
+	case myTypeFloat, myTypeDouble:
+		return classReal
+	case myTypeString, myTypeBlob:
+		return classText
+	case myTypeDatetime:
+		return classDate
+	}
+
+	return classInteger
+}
+
+// retype records the classes of the types of the arguments, pairs of type
+// and flags, and reports whether one changed. MySQL 8.0.22 and later keep
+// the type a parameter had in an earlier execution of the statement and
+// convert a later argument to it: a string after an integer comes back
+// as 0, anything after a DATETIME as a zero or garbage date, a large
+// integer after a DOUBLE rounded. The statement is then prepared again.
+// NULL keeps the class.
 func (stmt *Stmt) retype(types []byte) bool {
-	if stmt.numeric == nil {
-		stmt.numeric = make([]bool, len(types)/2)
+	if stmt.classes == nil {
+		stmt.classes = make([]byte, len(types)/2)
 	}
 
 	retype := false
 
-	for i := range stmt.numeric {
-		switch types[2*i] {
-		case myTypeNull:
-		case myTypeString, myTypeBlob:
-			retype = retype || stmt.numeric[i]
-			stmt.numeric[i] = false
-		case myTypeDatetime:
-			stmt.numeric[i] = false
-		default:
-			stmt.numeric[i] = true
+	for i, last := range stmt.classes {
+		class := typeClass(types[2*i])
+		if class == 0 {
+			continue
 		}
+
+		retype = retype || last != 0 && last != class
+		stmt.classes[i] = class
 	}
 
 	return retype
@@ -427,57 +449,57 @@ func (stmt *Stmt) retype(types []byte) bool {
 
 const unsignedParam byte = 0x80
 
-// appendParam appends the type (type byte, unsigned flag) and the binary
-// value of arg.
-func appendParam(types, values []byte, arg any, loc *time.Location) (newTypes, newValues []byte, err error) {
+// appendParam appends the binary value of arg and returns its type: the
+// type byte and the unsigned flag.
+func appendParam(values []byte, arg any, loc *time.Location) (typ [2]byte, newValues []byte, err error) {
 	le := binary.LittleEndian
 
 	switch v := arg.(type) {
 	case nil:
-		return append(types, myTypeNull, 0), values, nil
+		return [2]byte{myTypeNull, 0}, values, nil
 	case string:
-		return append(types, myTypeString, 0), appendLenEncString(values, v), nil
+		return [2]byte{myTypeString, 0}, appendLenEncString(values, v), nil
 	case []byte:
 		// A binary string, as _binary'...' in text: MySQL 8 converts a
 		// MYSQL_TYPE_STRING parameter of a statement reprepared after its
 		// table was recreated in the character set of the old column,
 		// truncating binary data at the first invalid byte.
-		return append(types, myTypeBlob, 0), appendLenEncBytes(values, v), nil
+		return [2]byte{myTypeBlob, 0}, appendLenEncBytes(values, v), nil
 	case time.Time:
-		return append(types, myTypeDatetime, 0), appendDatetime(values, inLocation(v, loc)), nil
+		return [2]byte{myTypeDatetime, 0}, appendDatetime(values, inLocation(v, loc)), nil
 	case bool:
 		b := byte(0)
 		if v {
 			b = 1
 		}
 
-		return append(types, myTypeTiny, 0), append(values, b), nil
+		return [2]byte{myTypeTiny, 0}, append(values, b), nil
 	case int:
-		return append(types, myTypeLongLong, 0), appendSigned(values, int64(v), 8), nil
+		return [2]byte{myTypeLongLong, 0}, appendSigned(values, int64(v), 8), nil
 	case int8:
-		return append(types, myTypeTiny, 0), appendSigned(values, int64(v), 1), nil
+		return [2]byte{myTypeTiny, 0}, appendSigned(values, int64(v), 1), nil
 	case int16:
-		return append(types, myTypeShort, 0), appendSigned(values, int64(v), 2), nil
+		return [2]byte{myTypeShort, 0}, appendSigned(values, int64(v), 2), nil
 	case int32:
-		return append(types, myTypeLong, 0), appendSigned(values, int64(v), 4), nil
+		return [2]byte{myTypeLong, 0}, appendSigned(values, int64(v), 4), nil
 	case int64:
-		return append(types, myTypeLongLong, 0), appendSigned(values, v, 8), nil
+		return [2]byte{myTypeLongLong, 0}, appendSigned(values, v, 8), nil
 	case uint:
-		return append(types, myTypeLongLong, unsignedParam), le.AppendUint64(values, uint64(v)), nil
+		return [2]byte{myTypeLongLong, unsignedParam}, le.AppendUint64(values, uint64(v)), nil
 	case uint8:
-		return append(types, myTypeTiny, unsignedParam), append(values, v), nil
+		return [2]byte{myTypeTiny, unsignedParam}, append(values, v), nil
 	case uint16:
-		return append(types, myTypeShort, unsignedParam), le.AppendUint16(values, v), nil
+		return [2]byte{myTypeShort, unsignedParam}, le.AppendUint16(values, v), nil
 	case uint32:
-		return append(types, myTypeLong, unsignedParam), le.AppendUint32(values, v), nil
+		return [2]byte{myTypeLong, unsignedParam}, le.AppendUint32(values, v), nil
 	case uint64:
-		return append(types, myTypeLongLong, unsignedParam), le.AppendUint64(values, v), nil
+		return [2]byte{myTypeLongLong, unsignedParam}, le.AppendUint64(values, v), nil
 	case float32:
-		return append(types, myTypeFloat, 0), le.AppendUint32(values, math.Float32bits(v)), nil
+		return [2]byte{myTypeFloat, 0}, le.AppendUint32(values, math.Float32bits(v)), nil
 	case float64:
-		return append(types, myTypeDouble, 0), le.AppendUint64(values, math.Float64bits(v)), nil
+		return [2]byte{myTypeDouble, 0}, le.AppendUint64(values, math.Float64bits(v)), nil
 	default:
-		return types, values, unsupportedArg(reflect.TypeOf(v).Name())
+		return [2]byte{}, values, unsupportedArg(reflect.TypeOf(v).Name())
 	}
 }
 

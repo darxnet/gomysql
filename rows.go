@@ -36,7 +36,9 @@ type Rows struct {
 	dest       []any
 	destOf     any
 
-	// sqldriver: the column ScanColumn reads next, i -1 before column 0.
+	// sqldriver: the column ScanColumn reads next; i is -1 at a new row,
+	// and the zero value before the first Next is never read, for startRow
+	// refuses a scan without a row.
 	cur rowCursor
 }
 

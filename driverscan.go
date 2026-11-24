@@ -22,7 +22,7 @@ func (rows *Rows) scanColumn(i int, dest any) (driver.Value, bool, error) {
 	if i == 0 {
 		c, err := rows.startRow()
 		if err != nil {
-			return nil, false, rows.malformed(err)
+			return nil, false, rows.badRow(err)
 		}
 
 		rows.cur = c
@@ -32,7 +32,7 @@ func (rows *Rows) scanColumn(i int, dest any) (driver.Value, bool, error) {
 
 	v := value{loc: rows.loc}
 	if err := rows.nextValue(&rows.cur, &v); err != nil {
-		return nil, false, rows.malformed(err)
+		return nil, false, rows.badRow(err)
 	}
 
 	col := &rows.columns[i]

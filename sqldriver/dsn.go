@@ -71,7 +71,8 @@ func parseAddress(config *gomysql.Config, s string) error {
 
 	if open := strings.IndexByte(s, '('); open >= 0 {
 		if !strings.HasSuffix(s, ")") {
-			return fmt.Errorf("gomysql/sqldriver: address %q without )", s)
+			return fmt.Errorf("gomysql/sqldriver: address %q without ); a / in the database name or a value "+
+				"must be escaped as %%2F", s)
 		}
 
 		network, address = s[:open], s[open+1:len(s)-1]
@@ -81,11 +82,13 @@ func parseAddress(config *gomysql.Config, s string) error {
 	case "", "tcp":
 		config.Network = "tcp"
 
-		switch _, _, err := net.SplitHostPort(address); {
+		switch _, port, err := net.SplitHostPort(address); {
 		case address == "":
 			address = "127.0.0.1:3306"
 		case err != nil: // no port, or IPv6 without brackets
 			address = net.JoinHostPort(strings.Trim(address, "[]"), "3306")
+		case port == "":
+			return fmt.Errorf("gomysql/sqldriver: address %q with an empty port", address)
 		}
 	case "unix":
 		config.Network = "unix"
@@ -158,7 +161,9 @@ func parseParams(config *gomysql.Config, query string) (timeout time.Duration, e
 		case "connectionAttributes":
 			config.ConnectAttrs, err = parseAttrs(value)
 		case "timeout":
-			timeout, err = time.ParseDuration(value)
+			if timeout, err = time.ParseDuration(value); err == nil && timeout < 0 {
+				err = fmt.Errorf("negative %v", timeout)
+			}
 		default:
 			// A session variable; its value is SQL, as written in the DSN.
 			if !isIdentifier(key) {

@@ -75,7 +75,8 @@ type Config struct {
 	// statement because it is read-only: 1290 for --read-only or
 	// --super-read-only, 1836 for read-only mode. After a failover the old
 	// primary turns read-only, and a new connection reaches the new one.
-	// The error then matches ErrBadConn; the statement did not run.
+	// The error then matches ErrBadConn. The statement did not run, but a
+	// procedure (CALL) may have run in part before the refusal.
 	RejectReadOnly bool
 
 	// Compress turns on the compressed protocol.

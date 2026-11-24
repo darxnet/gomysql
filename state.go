@@ -62,10 +62,11 @@ func (conn *Conn) end(err error) error {
 	return err
 }
 
-// fail marks the connection broken after err, unless err is nil or the
-// server's (*Error, which leaves the protocol in sync, but for connection
-// exceptions). After a canceled
-// or expired context it returns the context's error, with ErrBadConn.
+// fail marks the connection broken after err, unless err is nil or an
+// error of the server (*Error), which leaves the protocol in sync, but for
+// connection exceptions and, with Config.RejectReadOnly, read-only
+// refusals. After a canceled or expired context it returns the context's
+// error, with ErrBadConn.
 func (conn *Conn) fail(err error) error {
 	if err == nil {
 		return nil
@@ -146,7 +147,11 @@ func closesConnection(err *Error) bool {
 // messages of every language. 1792, a write in a READ ONLY transaction,
 // is the client's own doing.
 func readOnly(err *Error) bool {
-	return err.Number == 1836 || err.Number == 1290 &&
+	if err.Number == 1836 {
+		return true
+	}
+
+	return err.Number == 1290 &&
 		(strings.Contains(err.Message, "--read-only") || strings.Contains(err.Message, "--super-read-only"))
 }
 
@@ -203,7 +208,7 @@ func (conn *Conn) unwatch() {
 	conn.ctx, conn.stopWatch = nil, nil
 }
 
-// dial connects the socket, within ctx.
+// dialContext connects the socket, within ctx.
 func (conn *Conn) dialContext(ctx context.Context) (net.Conn, error) {
 	var d net.Dialer
 
