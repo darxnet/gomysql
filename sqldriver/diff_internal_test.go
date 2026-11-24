@@ -1,3 +1,8 @@
+//go:build go1.27
+
+// The tests compare the ScanColumn path of Go 1.27 with the Next path;
+// before Go 1.27 both are the Next path.
+
 package sqldriver
 
 import (
@@ -126,7 +131,7 @@ var diffDests = []func() any{
 	func() any { return new(namedBytes) }, func() any { return new(namedFloat) }, func() any { return new(recorder) },
 }
 
-// diffExprs are expressions for TestScanColumnDiff: integers at the ends
+// diffExprs are expressions for TestScanColumnMatchesNext: integers at the ends
 // of each range, floats, text that is or is not a number, binary strings,
 // dates around daylight saving time, times, JSON and DECIMAL.
 //
@@ -146,7 +151,7 @@ var diffExprs = []string{
 // ScanColumn gives the values and the errors of the Next path, for every
 // expression into every destination, in both protocols, in a Location
 // with daylight saving time.
-func TestScanColumnDiff(t *testing.T) {
+func TestScanColumnMatchesNext(t *testing.T) {
 	t.Parallel()
 
 	ny, err := time.LoadLocation("America/New_York")
@@ -238,7 +243,7 @@ func show(dest any) string {
 		return prefix.String() + "nil"
 	}
 
-	if tm, ok := e.Interface().(time.Time); ok {
+	if tm, ok := reflect.TypeAssert[time.Time](e); ok {
 		return prefix.String() + tm.Format(time.RFC3339Nano) + " " + tm.Location().String()
 	}
 
@@ -274,7 +279,7 @@ var diffRows = []string{
 // many columns: each column into each destination, the others into *any,
 // then the whole row into one destination type; in UTC and in +03:30.
 // Rows of many columns found a FLOAT flag leaking into the next DOUBLE.
-func TestScanColumnTable(t *testing.T) {
+func TestScanColumnManyColumns(t *testing.T) {
 	t.Parallel()
 
 	for _, loc := range []*time.Location{time.UTC, time.FixedZone("+03:30", 3*3600+1800)} {

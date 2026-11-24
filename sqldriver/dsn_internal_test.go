@@ -95,3 +95,35 @@ func TestParseDSNCharset(t *testing.T) {
 		t.Error("a charset that is not a name")
 	}
 }
+
+func TestParseDSNStrict(t *testing.T) {
+	t.Parallel()
+
+	for dsn, want := range map[string]string{
+		"tcp(::1)/db":           "[::1]:3306",
+		"tcp([::1])/db":         "[::1]:3306",
+		"tcp(db.example)/db":    "db.example:3306",
+		"tcp(10.0.0.1:3307)/db": "10.0.0.1:3307",
+	} {
+		config, _, err := parseDSN(dsn)
+		if err != nil || config.Address != want {
+			t.Errorf("%s: %q, %v; want %q", dsn, config.Address, err, want)
+		}
+	}
+
+	config, _, err := parseDSN("/db?charset=UTF8MB4")
+	if err != nil || len(config.InitCommands) != 1 || config.InitCommands[0] != "SET NAMES UTF8MB4" {
+		t.Errorf("upper-case charset: %q, %v", config.InitCommands, err)
+	}
+
+	for _, dsn := range []string{
+		"/db?sql_mode=a&sql_mode=b", // given twice
+		"/db?%3Bx=1",                // not a variable name
+		"/db?a-b=1",
+		"/db?charset=utf8;x",
+	} {
+		if _, _, err := parseDSN(dsn); err == nil {
+			t.Errorf("%s: no error", dsn)
+		}
+	}
+}

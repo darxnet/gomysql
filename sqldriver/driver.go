@@ -17,7 +17,15 @@
 // them without a copy, []byte and string with one, and any gets []byte.
 //
 // Rows have one result set: the others, such as those of a CALL, are
-// read and dropped.
+// read and dropped, and NextResultSet reports none.
+//
+// driver.ErrBadConn, after which database/sql retries on another
+// connection, comes only when nothing ran: for a connection broken before
+// the statement, and with Config.RejectReadOnly for a statement a
+// read-only server refused, as after a failover. An error after the
+// statement was sent is that of gomysql: the statement may have run. An
+// idle connection is pinged before it is reused after a second, so that
+// one the server closed is replaced.
 //
 // sql.Conn.Raw gives the gomysql.Conn, for LoadData, ScanStruct and the
 // rest of its API:
@@ -32,6 +40,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"fmt"
 	"io"
 	"reflect"
 	"time"
@@ -65,10 +74,13 @@ func (d Driver) Open(dsn string) (driver.Conn, error) {
 // skip-verify or false), collation, loc, compress, clientFoundRows,
 // allowCleartextPasswords, allowPublicKeyRetrieval, rejectReadOnly and
 // connectionAttributes; timeout limits connecting, and charset without
-// collation runs SET NAMES. The other parameters of go-sql-driver are
-// refused, for gomysql would not do what they ask. Any other parameter
+// collation runs SET NAMES; with collation, charset is unused. The other
+// parameters of go-sql-driver are refused, for gomysql would not do what
+// they ask, and a parameter given twice is an error. Any other parameter
 // sets a session variable when connecting: time_zone=%27%2B00:00%27 runs
-// SET time_zone='+00:00'.
+// SET time_zone='+00:00'. Its value is SQL, so it must never come from
+// users. Values are URL-escaped: a / in one, as in loc=Europe%2FKyiv,
+// must be.
 func (Driver) OpenConnector(dsn string) (driver.Connector, error) {
 	config, timeout, err := parseDSN(dsn)
 	if err != nil {
@@ -150,7 +162,7 @@ func (c *conn) done(err error) error {
 func (c *conn) started(err error) error {
 	err = c.done(err)
 	if err != nil && c.broken() && sqlhook.RefusedReadOnly(err) {
-		return driver.ErrBadConn
+		return fmt.Errorf("%w: %w", driver.ErrBadConn, err)
 	}
 
 	return err
@@ -264,7 +276,9 @@ func (c *conn) ResetSession(ctx context.Context) error {
 	return nil
 }
 
-func (c *conn) IsValid() bool { return !c.broken() }
+// IsValid is false for a broken connection, and for one left with open
+// Rows, as through sql.Conn.Raw: database/sql then drops it.
+func (c *conn) IsValid() bool { return !c.broken() && !sqlhook.Busy(c.c) }
 
 // CheckNamedValue accepts every argument as it is: gomysql converts them
 // itself, with uint64 above 1<<63, slices for IN (?) and sql.Named.
@@ -317,7 +331,7 @@ func (*stmt) NumInput() int { return -1 }
 
 // Exec and Query are of driver.Stmt; database/sql calls the Context ones.
 func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
-	return s.ExecContext(context.Background(), named(args))
+	return s.ExecContext(context.Background(), positional(args))
 }
 
 func (s *stmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
@@ -338,11 +352,11 @@ func (s *stmt) exec(ctx context.Context, args []any) (driver.Result, error) {
 }
 
 func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
-	return s.QueryContext(context.Background(), named(args))
+	return s.QueryContext(context.Background(), positional(args))
 }
 
-// named returns args as positional driver.NamedValue.
-func named(args []driver.Value) []driver.NamedValue {
+// positional returns args as positional driver.NamedValue.
+func positional(args []driver.Value) []driver.NamedValue {
 	out := make([]driver.NamedValue, len(args))
 	for i, a := range args {
 		out[i] = driver.NamedValue{Ordinal: i + 1, Value: a}

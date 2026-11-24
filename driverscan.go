@@ -26,7 +26,7 @@ func (rows *Rows) scanColumn(i int, dest any) (driver.Value, bool, error) {
 		}
 
 		rows.cur = c
-	} else if rows.cur.i != i {
+	} else if int(rows.cur.i) != i {
 		return nil, false, errColumnOrder
 	}
 
@@ -132,48 +132,36 @@ func assignBytes(dest any, b []byte) bool {
 func assignNull(dest any, v *value) bool {
 	switch d := dest.(type) {
 	case *sql.NullInt64:
-		if d != nil && v.kind == kindNull {
-			*d = sql.NullInt64{}
-			return true
-		}
-
-		if d != nil && assignDirect(&d.Int64, v) {
-			d.Valid = true
-			return true
-		}
+		return d != nil && assignNullable(&d.Int64, &d.Valid, v)
 	case *sql.NullString:
-		if d != nil && v.kind == kindNull {
-			*d = sql.NullString{}
-			return true
-		}
-
-		if d != nil && assignDirect(&d.String, v) {
-			d.Valid = true
-			return true
-		}
+		return d != nil && assignNullable(&d.String, &d.Valid, v)
 	case *sql.NullTime:
-		if d != nil && v.kind == kindNull {
-			*d = sql.NullTime{}
-			return true
-		}
-
-		if d != nil && assignDirect(&d.Time, v) {
-			d.Valid = true
-			return true
-		}
+		return d != nil && assignNullable(&d.Time, &d.Valid, v)
 	case *sql.NullFloat64:
-		if d != nil && v.kind == kindNull {
-			*d = sql.NullFloat64{}
-			return true
-		}
-
-		if d != nil && assignDirect(&d.Float64, v) {
-			d.Valid = true
-			return true
-		}
+		return d != nil && assignNullable(&d.Float64, &d.Valid, v)
 	}
 
 	return false
+}
+
+// assignNullable stores v into the fields of an sql.Null type: NULL as the
+// zero value, not valid; else as assignDirect, valid.
+func assignNullable[T any](field *T, valid *bool, v *value) bool {
+	if v.kind == kindNull {
+		var zero T
+
+		*field, *valid = zero, false
+
+		return true
+	}
+
+	if !assignDirect(field, v) {
+		return false
+	}
+
+	*valid = true
+
+	return true
 }
 
 // assignInt stores an integer, int64 bits if signed, into an integer or

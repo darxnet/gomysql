@@ -140,12 +140,14 @@ func closesConnection(err *Error) bool {
 }
 
 // readOnly reports whether the server refused a statement because it is
-// read-only: 1290 ER_OPTION_PREVENTS_STATEMENT for --read-only or
-// --super-read-only (1290 names other options too, such as
-// --secure-file-priv), 1836 ER_READ_ONLY_MODE. 1792, a write in a READ
-// ONLY transaction, is the client's own doing, unlike in go-sql-driver.
+// read-only: 1836 ER_READ_ONLY_MODE, or 1290 ER_OPTION_PREVENTS_STATEMENT
+// naming --read-only or --super-read-only (it names other options too,
+// such as --secure-file-priv). The option names stay as they are in the
+// messages of every language. 1792, a write in a READ ONLY transaction,
+// is the client's own doing.
 func readOnly(err *Error) bool {
-	return err.Number == 1836 || err.Number == 1290 && strings.Contains(err.Message, "read-only")
+	return err.Number == 1836 || err.Number == 1290 &&
+		(strings.Contains(err.Message, "--read-only") || strings.Contains(err.Message, "--super-read-only"))
 }
 
 // breakWith marks the connection broken by err, the first cause kept.

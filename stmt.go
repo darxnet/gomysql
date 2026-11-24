@@ -24,6 +24,10 @@ type Stmt struct {
 	names      []string // of the :name placeholders
 	id         uint32
 	backslash  bool // whether backslashes escaped in sent
+
+	// numeric[i]: the last argument of parameter i that was not NULL was a
+	// number, the type MySQL 8 keeps for it (see retype).
+	numeric []bool
 }
 
 // Close does nothing: the statement stays in the cache of the connection,
@@ -242,7 +246,7 @@ func (stmt *Stmt) ExecContext(ctx context.Context, args ...any) (*Result, error)
 func (stmt *Stmt) execute(ctx context.Context, args []any) error {
 	var scratch [64]byte
 
-	buf, err := stmt.executePacket(scratch[:0], args)
+	buf, retype, err := stmt.executePacket(scratch[:0], args)
 	if err != nil {
 		return err
 	}
@@ -257,6 +261,12 @@ func (stmt *Stmt) execute(ctx context.Context, args []any) error {
 
 	if err := conn.begin(ctx); err != nil {
 		return err
+	}
+
+	if retype && stmt.session == conn.session {
+		if err := conn.evictStmt(stmt); err != nil {
+			return conn.end(err)
+		}
 	}
 
 	if stmt.session != conn.session {
@@ -274,15 +284,16 @@ func (stmt *Stmt) execute(ctx context.Context, args []any) error {
 	return nil
 }
 
-// executePacket appends COM_STMT_EXECUTE after the command byte to buf.
-func (stmt *Stmt) executePacket(buf []byte, args []any) ([]byte, error) {
-	args, err := stmt.bind(args)
+// executePacket appends COM_STMT_EXECUTE after the command byte to buf;
+// retype says the statement must be prepared again first.
+func (stmt *Stmt) executePacket(buf []byte, args []any) (packet []byte, retype bool, err error) {
+	args, err = stmt.bind(args)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	if len(stmt.params) != len(args) {
-		return nil, errArgCount(len(stmt.params), len(args))
+		return nil, false, errArgCount(len(stmt.params), len(args))
 	}
 
 	// COM_STMT_EXECUTE after the command byte: stmt-id, flags (no cursor),
@@ -303,12 +314,12 @@ func (stmt *Stmt) executePacket(buf []byte, args []any) ([]byte, error) {
 
 		for i, arg := range args {
 			if _, ok := expandable(arg); ok {
-				return nil, fmt.Errorf("argument %d: %w", i, errSliceInStmt)
+				return nil, false, fmt.Errorf("argument %d: %w", i, errSliceInStmt)
 			}
 
 			v, err := convertArg(arg)
 			if err != nil {
-				return nil, fmt.Errorf("argument %d: %w", i, err)
+				return nil, false, fmt.Errorf("argument %d: %w", i, err)
 			}
 
 			if v == nil {
@@ -317,15 +328,16 @@ func (stmt *Stmt) executePacket(buf []byte, args []any) ([]byte, error) {
 
 			types, values, err = appendParam(types, values, v, stmt.conn.config.Location)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 		}
 
+		retype = stmt.retype(types)
 		buf = append(buf, types...)
 		buf = append(buf, values...)
 	}
 
-	return buf, nil
+	return buf, retype, nil
 }
 
 // bind returns the arguments of the placeholders in order.
@@ -381,6 +393,36 @@ func (stmt *Stmt) readColumns(n int) error {
 	}
 
 	return stmt.conn.readColumnsEOF()
+}
+
+// retype records the types of the arguments, pairs of type and flags, and
+// reports whether a string follows a number for some parameter. MySQL 8
+// keeps the type of a parameter from the first execution of a statement
+// and turns a later string into that number: "abc" comes back as 0. The
+// statement is then prepared again. NULL keeps the type; other changes,
+// such as a number after a string or an int after a float, convert
+// correctly.
+func (stmt *Stmt) retype(types []byte) bool {
+	if stmt.numeric == nil {
+		stmt.numeric = make([]bool, len(types)/2)
+	}
+
+	retype := false
+
+	for i := range stmt.numeric {
+		switch types[2*i] {
+		case myTypeNull:
+		case myTypeString, myTypeBlob:
+			retype = retype || stmt.numeric[i]
+			stmt.numeric[i] = false
+		case myTypeDatetime:
+			stmt.numeric[i] = false
+		default:
+			stmt.numeric[i] = true
+		}
+	}
+
+	return retype
 }
 
 const unsignedParam byte = 0x80

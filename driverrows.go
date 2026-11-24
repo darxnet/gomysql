@@ -23,6 +23,10 @@ func init() {
 		return state == stateBroken || state == stateClosed
 	}
 
+	sqlhook.Busy = func(conn any) bool {
+		return conn.(*Conn).rows != nil //nolint:forcetypeassert // sqldriver passes its *Conn
+	}
+
 	sqlhook.RefusedReadOnly = func(err error) bool {
 		var serverErr *Error
 
@@ -32,15 +36,22 @@ func init() {
 
 // rowCursor walks the columns of the current row.
 type rowCursor struct {
-	buf   []byte
-	nulls []byte // binary protocol
-	i     int
+	off int32 // of the next column in rows.buf; a row is below 1 GB, max_allowed_packet
+	i   int32
 }
+
+// errNoRow is the error of a scan for sqldriver without a current row:
+// before Next, after the end or after Close.
+var errNoRow = errors.New("gomysql: no current row")
 
 // startRow returns a cursor at the first column of the current row.
 func (rows *Rows) startRow() (rowCursor, error) {
+	if rows.buf == nil {
+		return rowCursor{}, errNoRow
+	}
+
 	if !rows.binary {
-		return rowCursor{buf: rows.buf}, nil
+		return rowCursor{}, nil
 	}
 
 	nullsLen := (len(rows.columns) + 7 + 2) / 8
@@ -48,20 +59,20 @@ func (rows *Rows) startRow() (rowCursor, error) {
 		return rowCursor{}, malformed("binary row")
 	}
 
-	return rowCursor{buf: rows.buf[1+nullsLen:], nulls: rows.buf[1 : 1+nullsLen]}, nil
+	return rowCursor{off: int32(1 + nullsLen)}, nil //nolint:gosec // G115: below 1 GB
 }
 
 // nextValue decodes the column of c into v and moves c to the next one.
 func (rows *Rows) nextValue(c *rowCursor, v *value) error {
 	col := &rows.columns[c.i]
-	buf := c.buf
+	buf := rows.buf[c.off:]
 
 	if rows.binary {
 		bit := c.i + 2
 		c.i++
 
 		switch {
-		case c.nulls[bit/8]&(1<<(bit%8)) != 0:
+		case rows.buf[1+bit/8]&(1<<(bit%8)) != 0:
 			v.kind = kindNull
 		case intSize(col.Type) > 0:
 			n := intSize(col.Type)
@@ -70,7 +81,7 @@ func (rows *Rows) nextValue(c *rowCursor, v *value) error {
 			}
 
 			v.setInt(binaryInt(buf, n, col.Flags&flagUnsigned == 0))
-			c.buf = buf[n:]
+			c.off += int32(n) //nolint:gosec // G115: below 1 GB
 		default:
 			d := decoder{buf: buf}
 			v.readBinary(&d, col, &rows.text)
@@ -79,7 +90,7 @@ func (rows *Rows) nextValue(c *rowCursor, v *value) error {
 				return malformed("binary row")
 			}
 
-			c.buf = d.buf
+			c.off = int32(len(rows.buf) - len(d.buf)) //nolint:gosec // G115: below 1 GB
 		}
 
 		return nil
@@ -94,9 +105,11 @@ func (rows *Rows) nextValue(c *rowCursor, v *value) error {
 			return malformed("text row")
 		}
 
-		v.kind, v.b, c.buf = kindBytes, buf[1:n:n], buf[n:]
+		v.kind, v.b = kindBytes, buf[1:n:n]
+		c.off += int32(n) //nolint:gosec // G115: below 1 GB
 	case len(buf) > 0 && buf[0] == 0xfb:
-		v.kind, c.buf = kindNull, buf[1:]
+		v.kind = kindNull
+		c.off++
 	default:
 		d := decoder{buf: buf}
 		v.kind, v.b = kindBytes, d.lenEncString()
@@ -105,7 +118,7 @@ func (rows *Rows) nextValue(c *rowCursor, v *value) error {
 			return malformed("text row")
 		}
 
-		c.buf = d.buf
+		c.off = int32(len(rows.buf) - len(d.buf)) //nolint:gosec // G115: below 1 GB
 	}
 
 	return nil
@@ -114,7 +127,9 @@ func (rows *Rows) nextValue(c *rowCursor, v *value) error {
 // malformed breaks the connection after err, a row that does not decode:
 // sqldriver then drops it, as it would after a failed Next.
 func (rows *Rows) malformed(err error) error {
-	rows.conn.breakWith(err)
+	if !errors.Is(err, errNoRow) {
+		rows.conn.breakWith(err)
+	}
 
 	return err
 }

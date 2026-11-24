@@ -1298,3 +1298,50 @@ func TestConformanceFloatThenDouble(t *testing.T) {
 		}
 	}
 }
+
+// MySQL 8 keeps the type of a parameter from the first execution of a
+// statement and turned a later string into that number ("abc" came back
+// as 0). The client prepares the statement again when a string follows a
+// number, also for another Prepare of the same text, which the cache
+// shares.
+func TestConformanceStmtStringAfterNumber(t *testing.T) {
+	t.Parallel()
+
+	c := confConn(t, "b", "b")
+
+	st, err := c.Prepare("SELECT ?")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, step := range []struct {
+		arg  any
+		want string
+	}{
+		{int64(5), "5"}, {"abc", "abc"}, {nil, "<nil>"}, {2.5, "2.5"}, {[]byte("xyz"), "xyz"},
+		{uint64(7), "7"}, {"def", "def"},
+	} {
+		var got any
+		if scanErr := st.QueryRow(step.arg).Scan(&got); scanErr != nil {
+			t.Fatalf("%v: %v", step.arg, scanErr)
+		}
+
+		if b, ok := got.([]byte); ok {
+			got = string(b)
+		}
+
+		if fmt.Sprint(got) != step.want {
+			t.Errorf("%T %v came back as %T %v", step.arg, step.arg, got, got)
+		}
+	}
+
+	again, err := c.Prepare("SELECT ?")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got string
+	if err := again.QueryRow("ghi").Scan(&got); err != nil || got != "ghi" {
+		t.Errorf("another Prepare after a number: %q, %v", got, err)
+	}
+}

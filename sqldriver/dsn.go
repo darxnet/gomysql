@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"slices"
 	"strings"
@@ -63,7 +64,8 @@ func parseDSN(dsn string) (config gomysql.Config, timeout time.Duration, err err
 }
 
 // parseAddress parses net(address): tcp by default, at 127.0.0.1:3306 or
-// /tmp/mysql.sock; a TCP address without a port gets 3306.
+// /tmp/mysql.sock; a TCP address without a port gets 3306, an IPv6 one
+// brackets too.
 func parseAddress(config *gomysql.Config, s string) error {
 	network, address := s, ""
 
@@ -79,12 +81,11 @@ func parseAddress(config *gomysql.Config, s string) error {
 	case "", "tcp":
 		config.Network = "tcp"
 
-		switch {
+		switch _, _, err := net.SplitHostPort(address); {
 		case address == "":
 			address = "127.0.0.1:3306"
-		case !strings.Contains(strings.TrimPrefix(address, "["), ":") ||
-			strings.HasPrefix(address, "[") && strings.HasSuffix(address, "]"):
-			address += ":3306"
+		case err != nil: // no port, or IPv6 without brackets
+			address = net.JoinHostPort(strings.Trim(address, "[]"), "3306")
 		}
 	case "unix":
 		config.Network = "unix"
@@ -124,6 +125,10 @@ func parseParams(config *gomysql.Config, query string) (timeout time.Duration, e
 	slices.Sort(keys)
 
 	for _, key := range keys {
+		if len(params[key]) > 1 {
+			return 0, fmt.Errorf("gomysql/sqldriver: parameter %s given more than once", key)
+		}
+
 		value := params.Get(key)
 
 		if reason, ok := refused[key]; ok {
@@ -155,6 +160,11 @@ func parseParams(config *gomysql.Config, query string) (timeout time.Duration, e
 		case "timeout":
 			timeout, err = time.ParseDuration(value)
 		default:
+			// A session variable; its value is SQL, as written in the DSN.
+			if !isIdentifier(key) {
+				return 0, fmt.Errorf("gomysql/sqldriver: parameter %q is not a variable name", key)
+			}
+
 			config.InitCommands = append(config.InitCommands, "SET "+key+"="+value)
 		}
 
@@ -167,7 +177,7 @@ func parseParams(config *gomysql.Config, query string) (timeout time.Duration, e
 	// server for it, as with go-sql-driver: SET NAMES, before the other
 	// session variables.
 	if charset != "" && config.Collation == "" {
-		if strings.Trim(charset, "abcdefghijklmnopqrstuvwxyz0123456789_") != "" {
+		if !isIdentifier(charset) {
 			return 0, fmt.Errorf("gomysql/sqldriver: parameter charset: %q is not a character set name", charset)
 		}
 
@@ -216,4 +226,21 @@ func parseAttrs(value string) (map[string]string, error) {
 	}
 
 	return attrs, nil
+}
+
+// isIdentifier reports whether s is a name of letters, digits and _, as
+// session variables and character sets are; upper case too.
+func isIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+
+	for _, c := range []byte(s) {
+		letter := 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
+		if !letter && (c < '0' || c > '9') && c != '_' {
+			return false
+		}
+	}
+
+	return true
 }

@@ -106,14 +106,15 @@ func TestExecPrepareTx(t *testing.T) {
 
 	db := openDB(t)
 
-	if _, err := db.Exec("CREATE TABLE IF NOT EXISTS sqldriver_t " +
-		"(id INT AUTO_INCREMENT PRIMARY KEY, v VARCHAR(20))"); err != nil {
+	table := fmt.Sprintf("sqldriver_t%d", time.Now().UnixNano())
+
+	if _, err := db.Exec("CREATE TABLE " + table + " (id INT AUTO_INCREMENT PRIMARY KEY, v VARCHAR(20))"); err != nil {
 		t.Fatal(err)
 	}
 
-	t.Cleanup(func() { _, _ = db.Exec("DROP TABLE sqldriver_t") })
+	t.Cleanup(func() { _, _ = db.Exec("DROP TABLE " + table) })
 
-	res, err := db.Exec("INSERT INTO sqldriver_t (v) VALUES (?), (?)", "a", "b")
+	res, err := db.Exec("INSERT INTO "+table+" (v) VALUES (?), (?)", "a", "b") //nolint:gosec // test table name
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,13 +123,16 @@ func TestExecPrepareTx(t *testing.T) {
 		t.Errorf("RowsAffected %d, %v", n, rerr)
 	}
 
-	st, err := db.Prepare("SELECT v FROM sqldriver_t WHERE id = ?")
+	st, err := db.Prepare("SELECT v FROM " + table + " WHERE id = ?") //nolint:gosec // test table name
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = st.Close() }()
 
-	id, _ := res.LastInsertId()
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	var v string
 	if serr := st.QueryRow(id).Scan(&v); serr != nil || v != "a" {
@@ -140,7 +144,7 @@ func TestExecPrepareTx(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, txErr := tx.Exec("DELETE FROM sqldriver_t"); txErr != nil {
+	if _, txErr := tx.Exec("DELETE FROM " + table); txErr != nil { //nolint:gosec // test table name
 		t.Fatal(txErr)
 	}
 
@@ -149,7 +153,7 @@ func TestExecPrepareTx(t *testing.T) {
 	}
 
 	var n int
-	if cErr := db.QueryRow("SELECT COUNT(*) FROM sqldriver_t").Scan(&n); cErr != nil || n < 2 {
+	if cErr := db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&n); cErr != nil || n != 2 {
 		t.Errorf("after the rollback: %d, %v", n, cErr)
 	}
 
@@ -176,13 +180,16 @@ func TestColumnTypesAndRaw(t *testing.T) {
 	}
 	defer func() { _ = rows.Close() }()
 
-	if rows.Err() != nil {
-		t.Fatal(rows.Err())
-	}
-
 	types, err := rows.ColumnTypes()
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	for rows.Next() { //nolint:revive // read to the end for Err
+	}
+
+	if rows.Err() != nil {
+		t.Fatal(rows.Err())
 	}
 
 	if p, s, ok := types[0].DecimalSize(); !ok || p != 5 || s != 2 || types[0].DatabaseTypeName() != "DECIMAL" {
@@ -231,7 +238,7 @@ func TestKilledIdleConn(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	time.Sleep(1100 * time.Millisecond)
+	time.Sleep(1100 * time.Millisecond) // over pingAfter, a second
 
 	var other int64
 	if err := db.QueryRow("SELECT CONNECTION_ID()").Scan(&other); err != nil || other == id {
@@ -354,8 +361,8 @@ func TestTimeScanType(t *testing.T) {
 	}
 }
 
-// charset without collation runs SET NAMES: the server picks the
-// collation, binary too.
+// charset without collation runs SET NAMES, which binary takes too: a
+// collation of gomysql's own, binary_general_ci, does not exist.
 func TestCharsetDSN(t *testing.T) {
 	t.Parallel()
 
@@ -406,5 +413,35 @@ func TestRawBroken(t *testing.T) {
 	var other int64
 	if err := db.QueryRow("SELECT CONNECTION_ID()").Scan(&other); err != nil || other == id {
 		t.Errorf("after a break through Raw: %d, %v", other, err)
+	}
+}
+
+// Rows left open through sql.Conn.Raw make the connection invalid:
+// database/sql drops it instead of handing out a busy connection.
+func TestRawLeftRows(t *testing.T) {
+	t.Parallel()
+
+	db := openDB(t)
+	db.SetMaxOpenConns(1)
+
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_ = conn.Raw(func(dc any) error {
+		c := dc.(interface{ Conn() *gomysql.Conn }).Conn()
+
+		//nolint:sqlclosecheck,rowserrcheck,gocritic // left open on purpose
+		_, err := c.Query("SELECT 1 UNION SELECT 2")
+
+		return err
+	})
+
+	_ = conn.Close()
+
+	var n int
+	if err := db.QueryRow("SELECT 3").Scan(&n); err != nil || n != 3 {
+		t.Errorf("after rows left open: %d, %v", n, err)
 	}
 }

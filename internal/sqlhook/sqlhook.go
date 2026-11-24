@@ -21,6 +21,9 @@ var (
 	// Reconnect or Close are left.
 	Broken func(conn any) bool
 
+	// Busy reports whether a *gomysql.Conn has open Rows.
+	Busy func(conn any) bool
+
 	// RefusedReadOnly reports whether err is a statement refused by a
 	// read-only server, which Config.RejectReadOnly turns into a broken
 	// connection.

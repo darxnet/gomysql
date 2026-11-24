@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"io"
@@ -913,5 +914,46 @@ func TestRefusedReadOnlyHook(t *testing.T) {
 		t.Error("1290 secure-file-priv")
 	case sqlhook.RefusedReadOnly(ErrBadConn):
 		t.Error("not a server error")
+	}
+}
+
+// The scans of sqldriver without a current row (after the end, after
+// Close) report it and leave a good connection good.
+func TestHooksWithoutRow(t *testing.T) {
+	t.Parallel()
+
+	conn, err := Connect(stateServer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	for _, closeEarly := range []bool{false, true} {
+		rows, err := conn.Query("rows")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if closeEarly {
+			rows.Next()
+			_ = rows.Close()
+		} else {
+			for rows.Next() { //nolint:revive // to the end
+			}
+		}
+
+		dest := make([]driver.Value, 1)
+		if err := sqlhook.Values(rows, dest); !errors.Is(err, errNoRow) {
+			t.Errorf("Values, closed early %v: %v", closeEarly, err)
+		}
+
+		var s string
+		if _, _, err := sqlhook.ScanColumn(rows, 0, &s); !errors.Is(err, errNoRow) {
+			t.Errorf("ScanColumn, closed early %v: %v", closeEarly, err)
+		}
+
+		if err := conn.Ping(); err != nil {
+			t.Errorf("Ping, closed early %v: %v", closeEarly, err)
+		}
 	}
 }
