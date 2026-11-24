@@ -3,6 +3,7 @@ package gomysql
 import (
 	"bytes"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,6 +57,8 @@ func assign(dest any, v *value, col *columnDefinition) error {
 			*d = v.appendText((*d)[:0], col)
 		}
 	case *any:
+		*d = v.driverValue(col)
+	case *driver.Value: // of database/sql drivers
 		*d = v.driverValue(col)
 	case *bool:
 		return setBool(d, v)

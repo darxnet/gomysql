@@ -1,0 +1,209 @@
+package sqldriver
+
+import (
+	"crypto/tls"
+	"errors"
+	"fmt"
+	"net/url"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/darxnet/gomysql"
+)
+
+// refused are the parameters of go-sql-driver/mysql that gomysql does not
+// do as they ask, with the reason.
+var refused = map[string]string{ //nolint:gosec // G101: names of parameters, not credentials
+	"allowAllFiles":            "LoadData reads an io.Reader, never a file",
+	"allowFallbackToPlaintext": "TLS, if configured, is required",
+	"allowNativePasswords":     "mysql_native_password is always allowed",
+	"allowOldPasswords":        "the old password hash is broken and never sent",
+	"checkConnLiveness":        "connections are not checked with MSG_PEEK; an idle one is pinged before reuse",
+	"columnsWithAlias":         "columns are named as the server names them",
+	"interpolateParams":        "arguments are always interpolated; Prepare makes prepared statements",
+	"maxAllowedPacket":         "the server refuses a packet larger than its max_allowed_packet",
+	"multiStatements":          "one statement per query",
+	"parseTime":                "DATE, DATETIME and TIMESTAMP are always time.Time",
+	"readTimeout":              "deadlines come from the context",
+	"rejectReadOnly":           "not supported",
+	"serverPubKey":             "use NewConnector with gomysql.Config.ServerPublicKey",
+	"strict":                   "removed from go-sql-driver too",
+	"timeTruncate":             "not supported",
+	"writeTimeout":             "deadlines come from the context",
+}
+
+// parseDSN parses a DSN of go-sql-driver/mysql:
+//
+//	[user[:password]@][net[(address)]]/dbname[?param=value&...]
+func parseDSN(dsn string) (config gomysql.Config, timeout time.Duration, err error) {
+	slash := strings.LastIndexByte(dsn, '/')
+	if slash < 0 {
+		return config, 0, errors.New("gomysql/sqldriver: DSN without the / before the database name")
+	}
+
+	head, tail := dsn[:slash], dsn[slash+1:]
+
+	if at := strings.LastIndexByte(head, '@'); at >= 0 {
+		config.User, config.Password, _ = strings.Cut(head[:at], ":")
+		head = head[at+1:]
+	}
+
+	if addrErr := parseAddress(&config, head); addrErr != nil {
+		return config, 0, addrErr
+	}
+
+	dbname, query, _ := strings.Cut(tail, "?")
+	if config.Database, err = url.PathUnescape(dbname); err != nil {
+		return config, 0, fmt.Errorf("gomysql/sqldriver: database name: %w", err)
+	}
+
+	timeout, err = parseParams(&config, query)
+
+	return config, timeout, err
+}
+
+// parseAddress parses net(address): tcp by default, at 127.0.0.1:3306 or
+// /tmp/mysql.sock; a TCP address without a port gets 3306.
+func parseAddress(config *gomysql.Config, s string) error {
+	network, address := s, ""
+
+	if open := strings.IndexByte(s, '('); open >= 0 {
+		if !strings.HasSuffix(s, ")") {
+			return fmt.Errorf("gomysql/sqldriver: address %q without )", s)
+		}
+
+		network, address = s[:open], s[open+1:len(s)-1]
+	}
+
+	switch network {
+	case "", "tcp":
+		config.Network = "tcp"
+
+		switch {
+		case address == "":
+			address = "127.0.0.1:3306"
+		case !strings.Contains(strings.TrimPrefix(address, "["), ":") ||
+			strings.HasPrefix(address, "[") && strings.HasSuffix(address, "]"):
+			address += ":3306"
+		}
+	case "unix":
+		config.Network = "unix"
+
+		if address == "" {
+			address = "/tmp/mysql.sock"
+		}
+	default:
+		return fmt.Errorf("gomysql/sqldriver: unknown network %q", network)
+	}
+
+	config.Address = address
+
+	return nil
+}
+
+// parseParams applies the parameters of query to config; the rest set
+// session variables.
+func parseParams(config *gomysql.Config, query string) (timeout time.Duration, err error) {
+	if query == "" {
+		return 0, nil
+	}
+
+	params, err := url.ParseQuery(query)
+	if err != nil {
+		return 0, fmt.Errorf("gomysql/sqldriver: parameters: %w", err)
+	}
+
+	var charset string
+
+	// Sorted, so that the session variables are set in a known order.
+	keys := make([]string, 0, len(params))
+	for key := range params {
+		keys = append(keys, key)
+	}
+
+	slices.Sort(keys)
+
+	for _, key := range keys {
+		value := params.Get(key)
+
+		if reason, ok := refused[key]; ok {
+			return 0, fmt.Errorf("gomysql/sqldriver: parameter %s is not supported: %s", key, reason)
+		}
+
+		switch key {
+		case "tls":
+			config.TLS, err = parseTLS(value)
+		case "collation":
+			config.Collation = value
+		case "charset":
+			// The first of a list, as go-sql-driver would try in turn.
+			charset, _, _ = strings.Cut(value, ",")
+		case "loc":
+			config.Location, err = time.LoadLocation(value)
+		case "compress":
+			config.Compress, err = parseBool(key, value)
+		case "clientFoundRows":
+			config.FoundRows, err = parseBool(key, value)
+		case "allowCleartextPasswords":
+			config.AllowCleartextPasswords, err = parseBool(key, value)
+		case "connectionAttributes":
+			config.ConnectAttrs, err = parseAttrs(value)
+		case "timeout":
+			timeout, err = time.ParseDuration(value)
+		default:
+			config.InitCommands = append(config.InitCommands, "SET "+key+"="+value)
+		}
+
+		if err != nil {
+			return 0, fmt.Errorf("gomysql/sqldriver: parameter %s: %w", key, err)
+		}
+	}
+
+	if charset != "" && config.Collation == "" {
+		config.Collation = charset + "_general_ci"
+	}
+
+	return timeout, nil
+}
+
+func parseTLS(value string) (*tls.Config, error) {
+	switch strings.ToLower(value) {
+	case "true", "1":
+		return &tls.Config{MinVersion: tls.VersionTLS12}, nil
+	case "skip-verify":
+		return &tls.Config{InsecureSkipVerify: true}, nil //nolint:gosec // G402: asked for by the DSN
+	case "false", "0":
+		return nil, nil //nolint:nilnil // no TLS
+	}
+
+	return nil, fmt.Errorf("%q: only true, skip-verify and false; "+
+		"a tls.Config of its own goes through NewConnector", value)
+}
+
+func parseBool(key, value string) (bool, error) {
+	switch value {
+	case "1", "true", "TRUE", "True":
+		return true, nil
+	case "0", "false", "FALSE", "False":
+		return false, nil
+	}
+
+	return false, fmt.Errorf("%s=%q: not a boolean", key, value)
+}
+
+// parseAttrs parses key:value,key:value.
+func parseAttrs(value string) (map[string]string, error) {
+	attrs := make(map[string]string)
+
+	for pair := range strings.SplitSeq(value, ",") {
+		k, v, ok := strings.Cut(pair, ":")
+		if !ok {
+			return nil, fmt.Errorf("%q is not key:value", pair)
+		}
+
+		attrs[k] = v
+	}
+
+	return attrs, nil
+}
