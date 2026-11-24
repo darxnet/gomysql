@@ -10,9 +10,11 @@
 //
 // The connections behave as gomysql.Conn: arguments are interpolated into
 // the text of the query (Prepare makes a real prepared statement, cached
-// per connection), and values are those of gomysql: int64 and uint64,
-// float32 and float64, time.Time for DATE, DATETIME and TIMESTAMP, string
-// for text and []byte for binary strings, whichever protocol.
+// per connection), and values are those of gomysql, whichever protocol:
+// int64 and uint64, float32 and float64, time.Time for DATE, DATETIME and
+// TIMESTAMP. Text, JSON, binary strings, DECIMAL and TIME are []byte that
+// point into the row, as database/sql takes them best: sql.RawBytes gets
+// them without a copy, []byte and string with one, and any gets []byte.
 //
 // sql.Conn.Raw gives the gomysql.Conn, for LoadData, ScanStruct and the
 // rest of its API:
@@ -27,7 +29,6 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
-	"encoding/json"
 	"errors"
 	"io"
 	"reflect"
@@ -35,6 +36,7 @@ import (
 	"time"
 
 	"github.com/darxnet/gomysql"
+	"github.com/darxnet/gomysql/internal/sqlhook"
 )
 
 func init() { //nolint:gochecknoinits // registering the driver is what importing the package is for
@@ -371,8 +373,6 @@ type rows struct {
 	r     *gomysql.Rows
 	cols  []string
 	types []*gomysql.ColumnType
-	dest  []driver.Value // that ptrs point to
-	ptrs  []any
 }
 
 var (
@@ -403,8 +403,8 @@ func (rs *rows) Close() error {
 	return rs.conn.done(rs.r.Close())
 }
 
-// Next scans the row into dest as gomysql's any values. JSON comes as
-// []byte, a driver.Value, not json.RawMessage.
+// Next scans the row into dest. Bytes, of text too, point into the row
+// until the next one: database/sql copies them, but for sql.RawBytes.
 func (rs *rows) Next(dest []driver.Value) error {
 	if rs.r == nil {
 		return io.EOF
@@ -418,26 +418,7 @@ func (rs *rows) Next(dest []driver.Value) error {
 		return io.EOF
 	}
 
-	if len(dest) > 0 && (len(rs.dest) != len(dest) || &rs.dest[0] != &dest[0]) {
-		rs.dest = dest
-		rs.ptrs = make([]any, len(dest))
-
-		for i := range dest {
-			rs.ptrs[i] = &dest[i]
-		}
-	}
-
-	if err := rs.r.Scan(rs.ptrs...); err != nil {
-		return err
-	}
-
-	for i, v := range dest {
-		if raw, ok := v.(json.RawMessage); ok {
-			dest[i] = []byte(raw)
-		}
-	}
-
-	return nil
+	return sqlhook.Values(rs.r, dest)
 }
 
 func (rs *rows) ColumnTypeDatabaseTypeName(i int) string { return rs.types[i].DatabaseTypeName() }

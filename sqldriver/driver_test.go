@@ -93,10 +93,9 @@ func TestArgsAndValues(t *testing.T) {
 		t.Errorf("%d %q %d %v", u, name, in, null)
 	case !when.Equal(time.Date(2026, 11, 24, 10, 11, 12, 0, time.UTC)):
 		t.Errorf("time %v", when)
-	case reflect.TypeOf(anyInt) != reflect.TypeFor[int64]() || reflect.TypeOf(anyText) != reflect.TypeFor[string]():
-		t.Errorf("any: %T %T, want int64 and string as the text protocol gives them too", anyInt, anyText)
-	case reflect.TypeOf(anyJSON) != reflect.TypeFor[[]byte]() && reflect.TypeOf(anyJSON) != reflect.TypeFor[string]():
-		// []byte from the JSON type of MySQL, string from MariaDB's LONGTEXT.
+	case reflect.TypeOf(anyInt) != reflect.TypeFor[int64]() || reflect.TypeOf(anyText) != reflect.TypeFor[[]byte]():
+		t.Errorf("any: %T %T, want int64 and []byte as the text protocol gives them too", anyInt, anyText)
+	case reflect.TypeOf(anyJSON) != reflect.TypeFor[[]byte]():
 		t.Errorf("JSON as %T", anyJSON)
 	}
 }
@@ -236,5 +235,67 @@ func TestKilledIdleConn(t *testing.T) {
 	var other int64
 	if err := db.QueryRow("SELECT CONNECTION_ID()").Scan(&other); err != nil || other == id {
 		t.Errorf("after KILL: %d, %v", other, err)
+	}
+}
+
+// Bytes point into the row: database/sql copies them into []byte and
+// string, so values of earlier rows stay, in both protocols.
+func TestBytesCopied(t *testing.T) {
+	t.Parallel()
+
+	db := openDB(t)
+
+	const q = "SELECT CONCAT('text-', n), CAST(CONCAT('bin-', n) AS BINARY), CAST(n AS DECIMAL(5,1)) " +
+		"FROM (SELECT 1 n UNION SELECT 2 UNION SELECT 3) t ORDER BY n"
+
+	st, err := db.Prepare(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	for name, query := range map[string]func() (*sql.Rows, error){
+		"text":   func() (*sql.Rows, error) { return db.Query(q) },
+		"binary": func() (*sql.Rows, error) { return st.Query() },
+	} {
+		rows, err := query()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var (
+			texts []string
+			bins  [][]byte
+			raws  []string
+		)
+
+		for rows.Next() {
+			var (
+				text string
+				bin  []byte
+				raw  sql.RawBytes
+			)
+
+			if err := rows.Scan(&text, &bin, &raw); err != nil {
+				t.Fatal(err)
+			}
+
+			texts, bins, raws = append(texts, text), append(bins, bin), append(raws, string(raw))
+		}
+
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := rows.Close(); err != nil { //nolint:sqlclosecheck // closed in the loop, each its own rows
+			t.Fatal(err)
+		}
+
+		for i := range 3 {
+			n := string(rune('1' + i))
+			if texts[i] != "text-"+n || string(bins[i]) != "bin-"+n || raws[i] != n+".0" {
+				t.Errorf("%s row %d: %q %q %q", name, i, texts[i], bins[i], raws[i])
+			}
+		}
 	}
 }

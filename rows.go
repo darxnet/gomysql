@@ -2,6 +2,7 @@ package gomysql
 
 import (
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"math"
@@ -35,6 +36,11 @@ type Rows struct {
 	direct     bool
 	dest       []any
 	destOf     any
+
+	// sqldriver: the destinations of driverValues, into the dest database/sql
+	// passes, which starts at driverOf.
+	driverDests []any
+	driverOf    *driver.Value
 }
 
 // errRowsGone is the error of Rows whose connection was closed or

@@ -3,7 +3,6 @@ package gomysql
 import (
 	"bytes"
 	"database/sql"
-	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -58,8 +57,8 @@ func assign(dest any, v *value, col *columnDefinition) error {
 		}
 	case *any:
 		*d = v.driverValue(col)
-	case *driver.Value: // of database/sql drivers
-		*d = v.driverValue(col)
+	case driverDest:
+		*d.v = v.refDriverValue(col)
 	case *bool:
 		return setBool(d, v)
 	case *int:
@@ -542,15 +541,27 @@ func (v *value) driverValue(col *columnDefinition) any {
 	case kindTime:
 		return v.t.time(v.loc)
 	case kindBytes:
-		return v.textDriverValue(col)
+		return v.textDriverValue(col, false)
 	default:
 		return nil
 	}
 }
 
+// refDriverValue is driverValue for sqldriver: the bytes of text, JSON,
+// binary strings and the rest point into the row, as database/sql copies
+// them where it needs.
+func (v *value) refDriverValue(col *columnDefinition) any {
+	if v.kind != kindBytes {
+		return v.driverValue(col)
+	}
+
+	return v.textDriverValue(col, true)
+}
+
 // textDriverValue is driverValue of a value sent as text: in the text
-// protocol, all of them.
-func (v *value) textDriverValue(col *columnDefinition) any {
+// protocol, all of them. With ref, bytes are not copied, and text stays
+// bytes.
+func (v *value) textDriverValue(col *columnDefinition, ref bool) any {
 	b := v.b
 
 	switch col.Type {
@@ -583,13 +594,18 @@ func (v *value) textDriverValue(col *columnDefinition) any {
 			}
 		}
 
-		if col.Type == myTypeJSON {
+		switch {
+		case ref:
+			return b
+		case col.Type == myTypeJSON:
 			return json.RawMessage(bytes.Clone(b))
-		}
-
-		if isText(col) {
+		case isText(col):
 			return string(b)
 		}
+	}
+
+	if ref {
+		return b
 	}
 
 	return bytes.Clone(b)
