@@ -138,8 +138,10 @@ func (conn *Conn) clientCaps(authResponseLen int) (uint32, error) {
 	server := conn.capFlags
 	// CLIENT_LOCAL_FILES: the server may ask for a file, which is answered
 	// only with the reader of Conn.LoadData, never read from the disk.
+	// Multi results: a stored procedure that returns rows (CALL) needs them,
+	// in both protocols; the client drains the results that follow.
 	caps := clientProtocol41 | clientLongPassword | clientPluginAuth | clientSecureConn | clientLocalFiles |
-		server&clientDeprecateEOF
+		clientMultiResults | clientPSMultiResults | server&clientDeprecateEOF
 
 	if conn.config.Compress {
 		if server&clientCompress == 0 {

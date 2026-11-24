@@ -256,13 +256,15 @@ func TestConnContext(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx, cancel = context.WithTimeout(context.Background(), 30*time.Millisecond)
+	// Long enough for a loaded machine (-race -cpu 1), then passed before
+	// the Ping.
+	ctx, cancel = context.WithTimeout(context.Background(), 500*time.Millisecond)
 	if _, err := conn.ExecContext(ctx, "ok"); err != nil {
 		t.Fatal(err)
 	}
 
+	<-ctx.Done()
 	cancel()
-	time.Sleep(50 * time.Millisecond)
 
 	if e := conn.Ping(); e != nil {
 		t.Errorf("Ping after the context: %v", e)
