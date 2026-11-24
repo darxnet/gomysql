@@ -16,8 +16,8 @@
 // point into the row, as database/sql takes them best: sql.RawBytes gets
 // them without a copy, []byte and string with one, and any gets []byte.
 //
-// Rows have one result set: the others, such as those of a CALL, are
-// read and dropped, so database/sql's NextResultSet reports none.
+// Rows.NextResultSet moves to the next result set, such as the next
+// SELECT of a stored procedure (CALL).
 //
 // driver.ErrBadConn, after which database/sql retries on another
 // connection, comes only when nothing ran: for a connection broken before
@@ -400,6 +400,7 @@ var (
 	_ driver.RowsColumnTypeNullable         = (*rows)(nil)
 	_ driver.RowsColumnTypePrecisionScale   = (*rows)(nil)
 	_ driver.RowsColumnTypeScanType         = (*rows)(nil)
+	_ driver.RowsNextResultSet              = (*rows)(nil)
 )
 
 func newRows(c *conn, r *gomysql.Rows) *rows {
@@ -423,6 +424,27 @@ func (rs *rows) Next(dest []driver.Value) error {
 	}
 
 	return sqlhook.Values(rs.r, dest)
+}
+
+// HasNextResultSet reports whether another result set may follow, once
+// the rows are read to their end.
+func (rs *rows) HasNextResultSet() bool { return sqlhook.HasNextResultSet(rs.r) }
+
+// NextResultSet moves to the next result set with columns, such as the
+// next SELECT of a CALL: io.EOF if there is none.
+func (rs *rows) NextResultSet() error {
+	if !rs.r.NextResultSet() {
+		if err := rs.conn.done(rs.r.Err()); err != nil {
+			return err
+		}
+
+		return io.EOF
+	}
+
+	rs.cols, _ = rs.r.Columns()
+	rs.types = nil
+
+	return nil
 }
 
 // advance reads the next row: io.EOF at the end.

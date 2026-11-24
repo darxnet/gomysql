@@ -445,3 +445,73 @@ func TestRawLeftRows(t *testing.T) {
 		t.Errorf("after rows left open: %d, %v", n, err)
 	}
 }
+
+// database/sql reads every SELECT of a procedure through NextResultSet,
+// as text and as a prepared statement.
+func TestNextResultSet(t *testing.T) {
+	t.Parallel()
+
+	db := sql.OpenDB(sqldriver.NewConnector(liveConfig(t, "root")))
+	t.Cleanup(func() { _ = db.Close() })
+
+	if _, err := db.Exec("DROP PROCEDURE IF EXISTS sqldriver_sets"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.Exec("CREATE PROCEDURE sqldriver_sets() BEGIN SELECT 1; SELECT 'two', 2; END"); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _, _ = db.Exec("DROP PROCEDURE IF EXISTS sqldriver_sets") })
+
+	st, err := db.Prepare("CALL sqldriver_sets()")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	for name, query := range map[string]func() (*sql.Rows, error){
+		"text":     func() (*sql.Rows, error) { return db.Query("CALL sqldriver_sets()") },
+		"prepared": func() (*sql.Rows, error) { return st.Query() },
+	} {
+		rows, err := query()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var (
+			one  int
+			two  string
+			num  int
+			sets int
+		)
+
+		for rows.Next() {
+			if err := rows.Scan(&one); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		sets++
+
+		if rows.NextResultSet() {
+			sets++
+
+			for rows.Next() {
+				if err := rows.Scan(&two, &num); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+
+		if rows.NextResultSet() {
+			sets++
+		}
+
+		if err := rows.Err(); err != nil || sets != 2 || one != 1 || two != "two" || num != 2 {
+			t.Errorf("%s: %d sets, %d %q %d, %v", name, sets, one, two, num, err)
+		}
+
+		_ = rows.Close() //nolint:sqlclosecheck // one rows per loop
+	}
+}

@@ -23,6 +23,10 @@ func init() {
 		return state == stateBroken || state == stateClosed
 	}
 
+	sqlhook.HasNextResultSet = func(rows any) bool {
+		return rows.(*Rows).hasNextResultSet() //nolint:forcetypeassert // sqldriver passes its *Rows
+	}
+
 	sqlhook.Busy = func(conn any) bool {
 		return conn.(*Conn).rows != nil //nolint:forcetypeassert // sqldriver passes its *Conn
 	}
