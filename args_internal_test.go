@@ -51,7 +51,7 @@ func TestInterpolate(t *testing.T) {
 		{"SELECT /* ? */ ?, /*! ? */", []any{1, 2}, "SELECT /* ? */ 1, /*! 2 */"},
 		{"SELECT `a``?`, ?", []any{1}, "SELECT `a``?`, 1"},
 	} {
-		got, err := (&Conn{}).interpolate(tt.query, tt.args)
+		got, err := interpolateString(&Conn{}, tt.query, tt.args)
 		if err != nil || got != tt.want {
 			t.Errorf("%q %v:\n got %q, %v\nwant %q", tt.query, tt.args, got, err, tt.want)
 		}
@@ -64,7 +64,7 @@ func TestInterpolateNoBackslashEscapes(t *testing.T) {
 	conn := &Conn{statusFlags: serverStatusNoBackslashEscapes}
 
 	// A backslash is an ordinary character: it neither escapes nor ends.
-	got, err := conn.interpolate(`SELECT 'a\', ?`, []any{`it's \`})
+	got, err := interpolateString(conn, `SELECT 'a\', ?`, []any{`it's \`})
 	if want := `SELECT 'a\', 'it''s \'`; err != nil || got != want {
 		t.Errorf("got %q, %v; want %q", got, err, want)
 	}
@@ -93,7 +93,7 @@ func TestInterpolateErrors(t *testing.T) {
 		{&Conn{config: Config{Collation: "sjis_bin"}}, "SELECT ?, ?", []any{1, ptrTo("x")}, "use Prepare"},
 		{&Conn{config: Config{Collation: "big5_bin"}}, "SELECT ?", []any{sql.NullString{Valid: true}}, "use Prepare"},
 	} {
-		_, err := tt.conn.interpolate(tt.query, tt.args)
+		_, err := interpolateString(tt.conn, tt.query, tt.args)
 		if err == nil || !strings.Contains(err.Error(), tt.want) {
 			t.Errorf("%q %v: %v, want %q", tt.query, tt.args, err, tt.want)
 		}
@@ -132,7 +132,7 @@ func FuzzInterpolate(f *testing.F) {
 				conn.statusFlags = serverStatusNoBackslashEscapes
 			}
 
-			got, err := conn.interpolate(query, []any{arg})
+			got, err := interpolateString(conn, query, []any{arg})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -190,4 +190,11 @@ func TestLiteralsSize(t *testing.T) {
 	if n := literalsSize([]any{sql.Named("a", "x")}); n != len(`'x'`) {
 		t.Errorf("sql.Named: %d", n)
 	}
+}
+
+// interpolateString is interpolate into a new string.
+func interpolateString(conn *Conn, query string, args []any) (string, error) {
+	buf, err := conn.interpolate(nil, query, args)
+
+	return string(buf), err
 }

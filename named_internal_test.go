@@ -48,7 +48,7 @@ func TestInterpolateNamed(t *testing.T) {
 		{"SELECT ?", []any{[]any{nil, true, ptrTo(2)}}, "SELECT NULL, 1, 2"},
 		{"SELECT ?", []any{sql.NullString{}}, "SELECT NULL"}, // a struct, but a value
 	} {
-		got, err := (&Conn{}).interpolate(tt.query, tt.args)
+		got, err := interpolateString(&Conn{}, tt.query, tt.args)
 		if err != nil || got != tt.want {
 			t.Errorf("%q %v:\n got %q, %v\nwant %q", tt.query, tt.args, got, err, tt.want)
 		}
@@ -77,7 +77,7 @@ func TestInterpolateNamedErrors(t *testing.T) {
 		{"SELECT :a", []any{map[string]any{"a": struct{}{}}}, ":a: gomysql: unsupported argument type"},
 		{"SELECT :ID", []any{struct{ *namedBase }{}}, "nil pointer"},
 	} {
-		_, err := (&Conn{}).interpolate(tt.query, tt.args)
+		_, err := interpolateString(&Conn{}, tt.query, tt.args)
 		if err == nil || !strings.Contains(err.Error(), tt.want) {
 			t.Errorf("%q %v: %v, want %q", tt.query, tt.args, err, tt.want)
 		}
@@ -114,7 +114,7 @@ func FuzzNamed(f *testing.F) {
 			}
 		}
 
-		_, _ = (&Conn{}).interpolate(query, []any{map[string]any{}})
-		_, _ = (&Conn{}).interpolate(query, []any{sql.Named("a", []int{1, 2})})
+		_, _ = interpolateString(&Conn{}, query, []any{map[string]any{}})
+		_, _ = interpolateString(&Conn{}, query, []any{sql.Named("a", []int{1, 2})})
 	})
 }

@@ -54,7 +54,9 @@ var parsers = map[string]func(buf []byte) error{
 		return err
 	},
 	"column definition": func(buf []byte) error {
-		return new(columnDefinition).parse(buf)
+		var names []byte
+
+		return new(columnDefinition).parse(buf, &names)
 	},
 	"handshake": func(buf []byte) error {
 		_, _, err := (&Conn{}).handshakeV10(buf)
@@ -141,29 +143,40 @@ func TestEOFStatusFlagsAfterLongCounts(t *testing.T) {
 	}
 }
 
+// The names of a result set share one slice: each keeps its bytes after
+// the read buffer is reused, and appending to one does not change the
+// next.
 func TestColumnDefinitionOwnsNames(t *testing.T) {
 	t.Parallel()
 
 	buf := columnDefinitionPacket()
 
-	var column columnDefinition
-	if err := column.parse(buf); err != nil {
+	var (
+		first, second columnDefinition
+		names         []byte
+	)
+
+	if err := first.parse(buf, &names); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := second.parse(buf, &names); err != nil {
 		t.Fatal(err)
 	}
 
 	clear(buf)
 
-	if string(column.Schema) != "db" || string(column.Name) != "id" || string(column.OrgName) != "id" {
-		t.Fatalf("names changed with the read buffer: %q %q %q", column.Schema, column.Name, column.OrgName)
+	if string(first.Name) != "id" || string(second.Name) != "id" {
+		t.Fatalf("names changed with the read buffer: %q %q", first.Name, second.Name)
 	}
 
-	if column.Type != myTypeLong || column.Len != 11 || column.Collation != 33 {
-		t.Fatalf("fixed fields: %+v", column)
+	if first.Type != myTypeLong || first.Len != 11 || first.Collation != 33 {
+		t.Fatalf("fixed fields: %+v", first)
 	}
 
-	column.Name = append(column.Name, 'x')
-	if string(column.OrgName) != "id" {
-		t.Fatalf("appending to Name changed OrgName: %q", column.OrgName)
+	first.Name = append(first.Name, 'x')
+	if string(second.Name) != "id" {
+		t.Fatalf("appending to one name changed the next: %q", second.Name)
 	}
 }
 

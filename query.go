@@ -54,20 +54,34 @@ func (conn *Conn) QueryContext(ctx context.Context, query string, args ...any) (
 // sendQuery starts a command and sends query with args interpolated
 // (COM_QUERY); on success the command runs until end.
 func (conn *Conn) sendQuery(ctx context.Context, query string, args []any) error {
-	if len(args) > 0 {
-		var err error
-
-		query, err = conn.interpolate(query, args)
-		if err != nil {
+	if len(args) == 0 {
+		if err := conn.begin(ctx); err != nil {
 			return err
 		}
+
+		if err := writeCommand(conn, comQuery, query); err != nil {
+			return conn.end(err)
+		}
+
+		return nil
+	}
+
+	// The query with its arguments is built in a buffer of the connection,
+	// kept for the next one up to writeBufferKeep.
+	buf, err := conn.interpolate(conn.qbuf[:0], query, args)
+	if err != nil {
+		return err
+	}
+
+	if cap(buf) <= writeBufferKeep {
+		conn.qbuf = buf[:0]
 	}
 
 	if err := conn.begin(ctx); err != nil {
 		return err
 	}
 
-	if err := writeCommand(conn, comQuery, query); err != nil {
+	if err := writeCommand(conn, comQuery, buf); err != nil {
 		return conn.end(err)
 	}
 

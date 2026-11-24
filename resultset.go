@@ -5,35 +5,45 @@ import (
 )
 
 // columnDefinition describes a column of a result set or a parameter of
-// a prepared statement (Protocol::ColumnDefinition41).
+// a prepared statement (Protocol::ColumnDefinition41). Of its names only
+// Name is kept: catalog, schema, tables and the original name are not
+// used.
 type columnDefinition struct {
-	Catalog  []byte
-	Schema   []byte
-	Table    []byte
-	OrgTable []byte
-	Name     []byte
-	OrgName  []byte
-
-	Collation uint16 // collationBinary for binary strings
+	Name      []byte
 	Len       uint32
-	Type      byte
+	Collation uint16 // collationBinary for binary strings
 	Flags     uint16
+	Type      byte
 	Decimals  byte
 }
 
-// parse reads Protocol::ColumnDefinition41 from buf. The names are copied
-// into one new slice, since buf is reused by the next read.
-func (column *columnDefinition) parse(buf []byte) error {
-	d := decoder{buf: bytes.Clone(buf)}
-	column.Catalog = d.lenEncString()
-	column.Schema = d.lenEncString()
-	column.Table = d.lenEncString()
-	column.OrgTable = d.lenEncString()
-	column.Name = d.lenEncString()
-	column.OrgName = d.lenEncString()
+// skipNames skips the names before Name: catalog, schema, table and the
+// original table.
+func skipNames(d *decoder) {
+	for range 4 {
+		d.lenEncString()
+	}
+}
+
+// parse reads Protocol::ColumnDefinition41 from buf. Name is appended to
+// *names, which keeps it after buf is reused by the next read: the names
+// of a result set share one slice.
+func (column *columnDefinition) parse(buf []byte, names *[]byte) error {
+	d := decoder{buf: buf}
+	skipNames(&d)
+	name := d.lenEncString()
+	d.lenEncString() // the original name
 	column.parseFixed(&d)
 
-	return d.err("column definition")
+	if err := d.err("column definition"); err != nil {
+		return err
+	}
+
+	start := len(*names)
+	*names = append(*names, name...)
+	column.Name = (*names)[start:len(*names):len(*names)]
+
+	return nil
 }
 
 // parseFixed reads the fixed-length fields that follow the names.
@@ -49,20 +59,18 @@ func (column *columnDefinition) parseFixed(d *decoder) {
 }
 
 // update reads Protocol::ColumnDefinition41 from buf into a column read
-// before. Unless a name changed, only the fixed-length fields are set, so
-// the names are not copied again.
+// before. Unless the name changed, only the fixed-length fields are set, so
+// the name is not copied again.
 func (column *columnDefinition) update(buf []byte) error {
 	d := decoder{buf: buf}
-
-	same := bytes.Equal(d.lenEncString(), column.Catalog) &&
-		bytes.Equal(d.lenEncString(), column.Schema) &&
-		bytes.Equal(d.lenEncString(), column.Table) &&
-		bytes.Equal(d.lenEncString(), column.OrgTable) &&
-		bytes.Equal(d.lenEncString(), column.Name) &&
-		bytes.Equal(d.lenEncString(), column.OrgName)
+	skipNames(&d)
+	same := bytes.Equal(d.lenEncString(), column.Name)
+	d.lenEncString()
 
 	if !same || d.bad {
-		return column.parse(buf)
+		var name []byte
+
+		return column.parse(buf, &name)
 	}
 
 	column.parseFixed(&d)
@@ -78,13 +86,17 @@ func (conn *Conn) readColumns(columns []columnDefinition) error {
 		return nil
 	}
 
+	// One slice for the names, with room for 16 bytes each; a longer one
+	// grows it, and the names before keep the old array.
+	names := make([]byte, 0, 16*len(columns))
+
 	for i := range columns {
 		buf, err := conn.readPacket()
 		if err != nil {
 			return err
 		}
 
-		if err := columns[i].parse(buf); err != nil {
+		if err := columns[i].parse(buf, &names); err != nil {
 			return err
 		}
 	}
