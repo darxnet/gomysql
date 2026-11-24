@@ -1386,3 +1386,64 @@ func TestConformanceStmtTypeChangeNotSent(t *testing.T) {
 		t.Errorf("after a canceled execution: %q, %v", s, err)
 	}
 }
+
+// Stored procedures that return rows (CALL) need CLIENT_MULTI_RESULTS: the
+// rows of the first result set are read, the rest and the status of the
+// CALL are drained, and the connection stays in sync.
+func TestConformanceCall(t *testing.T) {
+	t.Parallel()
+
+	c := confConn(t, "root", "root")
+
+	for _, q := range []string{
+		"DROP PROCEDURE IF EXISTS call_rows", "DROP PROCEDURE IF EXISTS call_two", "DROP PROCEDURE IF EXISTS call_none",
+		"CREATE PROCEDURE call_rows(IN n INT) BEGIN SELECT n AS a UNION SELECT n + 1; END",
+		"CREATE PROCEDURE call_two() BEGIN SELECT 1; SELECT 2, 3; END",
+		"CREATE PROCEDURE call_none() BEGIN DO 1; END",
+	} {
+		mustExec(t, c, q)
+	}
+
+	defer func() {
+		for _, p := range []string{"call_rows", "call_two", "call_none"} {
+			_, _ = c.Exec("DROP PROCEDURE IF EXISTS " + p)
+		}
+	}()
+
+	for _, m := range confModes {
+		rows, err := m.query(c, "CALL call_rows(?)", 5)
+		if err != nil {
+			t.Fatalf("%s: %v", m.name, err)
+		}
+
+		var got []int
+
+		for rows.Next() {
+			var v int
+			if err := rows.Scan(&v); err != nil {
+				t.Fatal(err)
+			}
+
+			got = append(got, v)
+		}
+
+		if err := rows.Close(); err != nil || len(got) != 2 || got[0] != 5 || got[1] != 6 {
+			t.Errorf("%s: CALL rows %v, %v", m.name, got, err)
+		}
+	}
+
+	var v int
+	if err := c.QueryRow("CALL call_two()").Scan(&v); err != nil || v != 1 {
+		t.Errorf("QueryRow of two result sets: %d, %v", v, err)
+	}
+
+	for _, q := range []string{"CALL call_two()", "CALL call_none()", "CALL call_rows(1)"} {
+		if _, err := c.Exec(q); err != nil {
+			t.Errorf("Exec %s: %v", q, err)
+		}
+	}
+
+	if err := c.Ping(); err != nil {
+		t.Errorf("out of sync after CALL: %v", err)
+	}
+}
