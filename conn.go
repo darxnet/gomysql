@@ -16,6 +16,7 @@ type Conn struct {
 	server       string
 	reader       packetReader
 	wbuf         []byte // reused write buffer
+	qbuf         []byte // reused buffer of interpolated queries
 	lastInsertID uint64
 	rowsAffected uint64
 	id           uint32

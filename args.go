@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -97,14 +98,15 @@ func errArgCount(placeholders, args int) error {
 	return fmt.Errorf("gomysql: %d placeholders in the query, %d arguments", placeholders, args)
 }
 
-// interpolate replaces the placeholders of query with args as SQL
-// literals, for the text protocol. A ? or :name is a placeholder where the
-// server would see one in a prepared statement: not in a string, a quoted
-// identifier or a comment. A slice argument becomes a list.
-func (conn *Conn) interpolate(query string, args []any) (string, error) {
+// interpolate appends query to dst with the placeholders replaced by args
+// as SQL literals, for the text protocol. A ? or :name is a placeholder
+// where the server would see one in a prepared statement: not in a
+// string, a quoted identifier or a comment. A slice argument becomes a
+// list.
+func (conn *Conn) interpolate(dst []byte, query string, args []any) ([]byte, error) {
 	var b binder
 	if err := b.init(args); err != nil {
-		return "", err
+		return nil, err
 	}
 
 	var err error
@@ -116,7 +118,7 @@ func (conn *Conn) interpolate(query string, args []any) (string, error) {
 		collation:   conn.config.Collation,
 	}
 
-	buf := make([]byte, 0, len(query)+literalsSize(args))
+	buf := slices.Grow(dst, len(query)+literalsSize(args))
 
 	for i := 0; i < len(query); {
 		// Copy what can start neither a placeholder nor what skipNonCode
@@ -151,9 +153,9 @@ func (conn *Conn) interpolate(query string, args []any) (string, error) {
 			)
 
 			if n, ok, err = b.positional(); err != nil {
-				return "", err
+				return nil, err
 			} else if !ok {
-				return "", errArgCount(countPlaceholders(query, !e.noBackslash), len(args))
+				return nil, errArgCount(countPlaceholders(query, !e.noBackslash), len(args))
 			}
 
 			arg = args[n]
@@ -161,7 +163,7 @@ func (conn *Conn) interpolate(query string, args []any) (string, error) {
 			end = i + 1
 		case end > i:
 			if arg, err = b.named(query[i+1 : end]); err != nil {
-				return "", err
+				return nil, err
 			}
 		default:
 			buf = append(buf, query[i])
@@ -172,20 +174,20 @@ func (conn *Conn) interpolate(query string, args []any) (string, error) {
 
 		if buf, err = e.appendArg(buf, arg); err != nil {
 			if query[i] == '?' {
-				return "", fmt.Errorf("argument %d: %w", b.next-1, err)
+				return nil, fmt.Errorf("argument %d: %w", b.next-1, err)
 			}
 
-			return "", fmt.Errorf("%s: %w", query[i:end], err)
+			return nil, fmt.Errorf("%s: %w", query[i:end], err)
 		}
 
 		i = end
 	}
 
 	if err := b.done(query, !e.noBackslash); err != nil {
-		return "", err
+		return nil, err
 	}
 
-	return string(buf), nil
+	return buf, nil
 }
 
 // special marks the bytes that start a placeholder, a string, a quoted

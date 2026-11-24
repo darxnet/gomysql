@@ -379,8 +379,11 @@ func TestScanTimesRawBytes(t *testing.T) {
 
 func scanBenchRows(binaryProtocol bool) *Rows {
 	cols := make([]columnDefinition, len(replayColumns))
+
+	var names []byte
+
 	for i, c := range replayColumns {
-		if err := cols[i].parse(c.definition()); err != nil {
+		if err := cols[i].parse(c.definition(), &names); err != nil {
 			panic(err)
 		}
 	}
@@ -455,7 +458,7 @@ func TestArgsLocation(t *testing.T) {
 
 	// Text.
 	for loc, want := range map[*time.Location]string{nil: "13:31:33", kyiv: "15:31:33"} {
-		q, err := (&Conn{config: Config{Location: loc}}).interpolate("SELECT ?", []any{arg})
+		q, err := interpolateString(&Conn{config: Config{Location: loc}}, "SELECT ?", []any{arg})
 		if err != nil || !strings.Contains(q, "2026-11-18 "+want) {
 			t.Errorf("text in %v: %q, %v; want %s", loc, q, err, want)
 		}
