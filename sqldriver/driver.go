@@ -31,6 +31,7 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/darxnet/gomysql"
@@ -59,8 +60,8 @@ func (d Driver) Open(dsn string) (driver.Conn, error) {
 //
 // The parameters that have a gomysql.Config field are tls (true,
 // skip-verify or false), collation, charset, loc, compress,
-// clientFoundRows, allowCleartextPasswords and connectionAttributes;
-// timeout limits connecting. The other parameters of go-sql-driver are
+// clientFoundRows, allowCleartextPasswords, allowPublicKeyRetrieval,
+// rejectReadOnly and connectionAttributes; timeout limits connecting. The other parameters of go-sql-driver are
 // refused, for gomysql would not do what they ask. Any other parameter
 // sets a session variable when connecting: time_zone=%27%2B00:00%27 runs
 // SET time_zone='+00:00'.
@@ -98,7 +99,7 @@ func (c *connector) Connect(ctx context.Context) (driver.Conn, error) {
 		return nil, err
 	}
 
-	return &conn{c: cc, used: time.Now()}, nil
+	return &conn{c: cc, used: time.Now(), rejectReadOnly: c.config.RejectReadOnly}, nil
 }
 
 func (*connector) Driver() driver.Driver { return Driver{} }
@@ -112,6 +113,8 @@ type conn struct {
 	c    *gomysql.Conn
 	used time.Time // the end of the last command
 	bad  bool      // broken: database/sql drops it
+
+	rejectReadOnly bool // of the Config
 }
 
 var (
@@ -130,14 +133,29 @@ var (
 func (c *conn) Conn() *gomysql.Conn { return c.c }
 
 // done records the end of a command and whether err broke the connection.
+// A statement refused by a read-only server, with Config.RejectReadOnly,
+// gives driver.ErrBadConn: it did not run, so database/sql retries it on a
+// new connection, which may reach the new primary.
 func (c *conn) done(err error) error {
 	c.used = time.Now()
 
 	if errors.Is(err, gomysql.ErrBadConn) || errors.Is(err, sql.ErrConnDone) {
 		c.bad = true
+
+		if c.rejectReadOnly && readOnly(err) {
+			return driver.ErrBadConn
+		}
 	}
 
 	return err
+}
+
+// readOnly is the rule of gomysql's Config.RejectReadOnly: 1290 for
+// --read-only or --super-read-only, 1836.
+func readOnly(err error) bool {
+	var e *gomysql.Error
+
+	return errors.As(err, &e) && (e.Number == 1836 || e.Number == 1290 && strings.Contains(e.Message, "read-only"))
 }
 
 // ready returns driver.ErrBadConn for a connection broken before: nothing
@@ -162,8 +180,8 @@ func (c *conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, e
 	}
 
 	st, err := c.c.PrepareContext(ctx, query)
-	if c.done(err) != nil {
-		return nil, err
+	if derr := c.done(err); derr != nil {
+		return nil, derr
 	}
 
 	return &stmt{conn: c, st: st}, nil
@@ -181,8 +199,8 @@ func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 	}
 
 	t, err := c.c.BeginTx(ctx, &sql.TxOptions{Isolation: sql.IsolationLevel(opts.Isolation), ReadOnly: opts.ReadOnly})
-	if c.done(err) != nil {
-		return nil, err
+	if derr := c.done(err); derr != nil {
+		return nil, derr
 	}
 
 	return &tx{conn: c, t: t}, nil
@@ -194,8 +212,8 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	}
 
 	res, err := c.c.ExecContext(ctx, query, namedArgs(args)...)
-	if c.done(err) != nil {
-		return nil, err
+	if derr := c.done(err); derr != nil {
+		return nil, derr
 	}
 
 	return res, nil
@@ -207,8 +225,8 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 	}
 
 	r, err := c.c.QueryContext(ctx, query, namedArgs(args)...)
-	if c.done(err) != nil {
-		return nil, err
+	if derr := c.done(err); derr != nil {
+		return nil, derr
 	}
 
 	return newRows(c, r), nil
@@ -316,8 +334,8 @@ func (s *stmt) exec(ctx context.Context, args []any) (driver.Result, error) {
 	}
 
 	res, err := s.st.ExecContext(ctx, args...)
-	if s.conn.done(err) != nil {
-		return nil, err
+	if derr := s.conn.done(err); derr != nil {
+		return nil, derr
 	}
 
 	return res, nil
@@ -337,8 +355,8 @@ func (s *stmt) query(ctx context.Context, args []any) (driver.Rows, error) {
 	}
 
 	r, err := s.st.QueryContext(ctx, args...)
-	if s.conn.done(err) != nil {
-		return nil, err
+	if derr := s.conn.done(err); derr != nil {
+		return nil, derr
 	}
 
 	return newRows(s.conn, r), nil

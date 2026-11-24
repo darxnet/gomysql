@@ -26,7 +26,6 @@ var refused = map[string]string{ //nolint:gosec // G101: names of parameters, no
 	"multiStatements":          "one statement per query",
 	"parseTime":                "DATE, DATETIME and TIMESTAMP are always time.Time",
 	"readTimeout":              "deadlines come from the context",
-	"rejectReadOnly":           "not supported",
 	"serverPubKey":             "use NewConnector with gomysql.Config.ServerPublicKey",
 	"strict":                   "removed from go-sql-driver too",
 	"timeTruncate":             "not supported",
@@ -147,6 +146,10 @@ func parseParams(config *gomysql.Config, query string) (timeout time.Duration, e
 			config.FoundRows, err = parseBool(key, value)
 		case "allowCleartextPasswords":
 			config.AllowCleartextPasswords, err = parseBool(key, value)
+		case "allowPublicKeyRetrieval":
+			config.AllowPublicKeyRetrieval, err = parseBool(key, value)
+		case "rejectReadOnly":
+			config.RejectReadOnly, err = parseBool(key, value)
 		case "connectionAttributes":
 			config.ConnectAttrs, err = parseAttrs(value)
 		case "timeout":

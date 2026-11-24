@@ -42,13 +42,8 @@ func TestOpenDSN(t *testing.T) {
 
 	config := liveConfig(t, "b")
 
-	// The connector logs in first: caching_sha2_password then knows the
-	// password, which a DSN cannot fetch the public key for.
-	if err := openDB(t).Ping(); err != nil {
-		t.Fatal(err)
-	}
-
-	db, err := sql.Open("gomysql", "b:b@tcp("+config.Address+")/gomysql?time_zone=%27%2B02:00%27")
+	db, err := sql.Open("gomysql", "b:b@tcp("+config.Address+")/gomysql?allowPublicKeyRetrieval=true&"+
+		"time_zone=%27%2B02:00%27")
 	if err != nil {
 		t.Fatal(err)
 	}

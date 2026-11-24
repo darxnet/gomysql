@@ -1,9 +1,14 @@
 package sqldriver
 
 import (
+	"database/sql/driver"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/darxnet/gomysql"
 )
 
 func TestParseDSN(t *testing.T) {
@@ -88,5 +93,40 @@ func TestParseDSNCharset(t *testing.T) {
 	config, _, err = parseDSN("/db?charset=latin1&collation=latin1_bin")
 	if err != nil || config.Collation != "latin1_bin" {
 		t.Errorf("charset with collation: %q, %v", config.Collation, err)
+	}
+}
+
+func TestParseDSNFlags(t *testing.T) {
+	t.Parallel()
+
+	config, _, err := parseDSN("/db?allowPublicKeyRetrieval=true&rejectReadOnly=1")
+	if err != nil || !config.AllowPublicKeyRetrieval || !config.RejectReadOnly {
+		t.Errorf("%+v, %v", config, err)
+	}
+}
+
+// With RejectReadOnly, a statement refused by a read-only server gives
+// driver.ErrBadConn, so database/sql retries it on a new connection; other
+// errors do not.
+func TestDoneReadOnly(t *testing.T) {
+	t.Parallel()
+
+	ro := fmt.Errorf("%w: %w", &gomysql.Error{Number: 1290, Message: "running with the --read-only option"},
+		gomysql.ErrBadConn)
+	file := &gomysql.Error{Number: 1290, Message: "running with the --secure-file-priv option"}
+
+	c := &conn{rejectReadOnly: true}
+	if err := c.done(ro); !errors.Is(err, driver.ErrBadConn) || !c.bad {
+		t.Errorf("read-only: %v, bad %v", err, c.bad)
+	}
+
+	c = &conn{rejectReadOnly: true}
+	if err := c.done(file); errors.Is(err, driver.ErrBadConn) || c.bad {
+		t.Errorf("secure-file-priv: %v, bad %v", err, c.bad)
+	}
+
+	c = &conn{}
+	if err := c.done(ro); errors.Is(err, driver.ErrBadConn) || !c.bad {
+		t.Errorf("without RejectReadOnly: %v, bad %v", err, c.bad)
 	}
 }

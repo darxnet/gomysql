@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -185,7 +186,9 @@ func TestConformanceTxContext(t *testing.T) {
 }
 
 // A statement larger than max_allowed_packet gets the server's error,
-// 1153, not a failed write; the server closes the connection.
+// 1153, not a failed write; the server closes the connection. Rarely (1-2
+// in 40 on MySQL 5.7) the reset of the connection overtakes the error,
+// which the kernel then drops: the client sees the reset.
 func TestConformancePacketTooLarge(t *testing.T) {
 	t.Parallel()
 
@@ -202,7 +205,9 @@ func TestConformancePacketTooLarge(t *testing.T) {
 	}
 
 	_, err := c.Exec("SELECT '" + strings.Repeat("x", limit) + "'")
-	if !errors.Is(err, &gomysql.Error{Number: 1153}) || !errors.Is(err, gomysql.ErrBadConn) {
+
+	reset := errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE)
+	if !errors.Is(err, &gomysql.Error{Number: 1153}) && !reset || !errors.Is(err, gomysql.ErrBadConn) {
 		t.Errorf("a statement of %d bytes: %v", limit+10, err)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -79,7 +80,7 @@ func (conn *Conn) fail(err error) error {
 	case errors.Is(err, ErrBadConn):
 		conn.breakWith(err)
 	case errors.As(err, &serverErr):
-		if closesConnection(serverErr) {
+		if closesConnection(serverErr) || conn.config.RejectReadOnly && readOnly(serverErr) {
 			err = fmt.Errorf("%w: %w", err, ErrBadConn)
 			conn.breakWith(err)
 		}
@@ -136,6 +137,15 @@ func contextErr(ctx context.Context) error {
 // out of sequence: sequenceMismatch breaks the connection.
 func closesConnection(err *Error) bool {
 	return err.SQLState[0] == '0' && err.SQLState[1] == '8' && err.Number != 1047
+}
+
+// readOnly reports whether the server refused a statement because it is
+// read-only: 1290 ER_OPTION_PREVENTS_STATEMENT for --read-only or
+// --super-read-only (1290 names other options too, such as
+// --secure-file-priv), 1836 ER_READ_ONLY_MODE. 1792, a write in a READ
+// ONLY transaction, is the client's own doing, unlike in go-sql-driver.
+func readOnly(err *Error) bool {
+	return err.Number == 1836 || err.Number == 1290 && strings.Contains(err.Message, "read-only")
 }
 
 // breakWith marks the connection broken by err, the first cause kept.

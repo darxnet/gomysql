@@ -842,3 +842,54 @@ func TestClosesConnection(t *testing.T) {
 		}
 	}
 }
+
+// RejectReadOnly breaks the connection on the errors of a read-only
+// server, and only on those.
+func TestRejectReadOnly(t *testing.T) {
+	t.Parallel()
+
+	errs := map[string]struct {
+		number uint16
+		msg    string
+	}{
+		"ro":        {1290, "The MySQL server is running with the --read-only option"},
+		"super":     {1290, "The MySQL server is running with the --super-read-only option"},
+		"mode":      {1836, "Running in read-only mode"},
+		"file":      {1290, "The MySQL server is running with the --secure-file-priv option"},
+		"rotx":      {1792, "Cannot execute statement in a READ ONLY transaction."},
+		"duplicate": {1062, "Duplicate entry"},
+	}
+
+	cfg := newFakeServer(t, true, func(c *fakeConn, cmd byte, payload []byte) error {
+		if e, ok := errs[string(payload)]; ok && cmd == comQuery {
+			return c.errPacket(e.number, "HY000", e.msg)
+		}
+
+		return c.ok()
+	}).config()
+
+	for _, reject := range []bool{false, true} {
+		cfg.RejectReadOnly = reject
+
+		for name := range errs {
+			conn, err := Connect(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = conn.Exec(name)
+
+			var serverErr *Error
+			if !errors.As(err, &serverErr) {
+				t.Fatalf("%s: %v", name, err)
+			}
+
+			broken := reject && (name == "ro" || name == "super" || name == "mode")
+			if errors.Is(err, ErrBadConn) != broken || (conn.Ping() != nil) != broken {
+				t.Errorf("RejectReadOnly %v, %s: %v, want broken %v", reject, name, err, broken)
+			}
+
+			_ = conn.Close()
+		}
+	}
+}
