@@ -1,14 +1,9 @@
 package sqldriver
 
 import (
-	"database/sql/driver"
-	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/darxnet/gomysql"
 )
 
 func TestParseDSN(t *testing.T) {
@@ -85,48 +80,18 @@ func TestParseDSNErrors(t *testing.T) {
 func TestParseDSNCharset(t *testing.T) {
 	t.Parallel()
 
-	config, _, err := parseDSN("/db?charset=latin1,utf8mb4")
-	if err != nil || config.Collation != "latin1_general_ci" {
-		t.Errorf("charset: %q, %v", config.Collation, err)
+	config, _, err := parseDSN("/db?charset=latin1,utf8mb4&time_zone=%27%2B00:00%27")
+	if err != nil || config.Collation != "" ||
+		strings.Join(config.InitCommands, "; ") != "SET NAMES latin1; SET time_zone='+00:00'" {
+		t.Errorf("charset: %q %q, %v", config.Collation, config.InitCommands, err)
 	}
 
 	config, _, err = parseDSN("/db?charset=latin1&collation=latin1_bin")
-	if err != nil || config.Collation != "latin1_bin" {
-		t.Errorf("charset with collation: %q, %v", config.Collation, err)
-	}
-}
-
-func TestParseDSNFlags(t *testing.T) {
-	t.Parallel()
-
-	config, _, err := parseDSN("/db?allowPublicKeyRetrieval=true&rejectReadOnly=1")
-	if err != nil || !config.AllowPublicKeyRetrieval || !config.RejectReadOnly {
-		t.Errorf("%+v, %v", config, err)
-	}
-}
-
-// With RejectReadOnly, a statement refused by a read-only server gives
-// driver.ErrBadConn, so database/sql retries it on a new connection; other
-// errors do not.
-func TestDoneReadOnly(t *testing.T) {
-	t.Parallel()
-
-	ro := fmt.Errorf("%w: %w", &gomysql.Error{Number: 1290, Message: "running with the --read-only option"},
-		gomysql.ErrBadConn)
-	file := &gomysql.Error{Number: 1290, Message: "running with the --secure-file-priv option"}
-
-	c := &conn{rejectReadOnly: true}
-	if err := c.done(ro); !errors.Is(err, driver.ErrBadConn) || !c.bad {
-		t.Errorf("read-only: %v, bad %v", err, c.bad)
+	if err != nil || config.Collation != "latin1_bin" || len(config.InitCommands) != 0 {
+		t.Errorf("charset with collation: %q %q, %v", config.Collation, config.InitCommands, err)
 	}
 
-	c = &conn{rejectReadOnly: true}
-	if err := c.done(file); errors.Is(err, driver.ErrBadConn) || c.bad {
-		t.Errorf("secure-file-priv: %v, bad %v", err, c.bad)
-	}
-
-	c = &conn{}
-	if err := c.done(ro); errors.Is(err, driver.ErrBadConn) || !c.bad {
-		t.Errorf("without RejectReadOnly: %v, bad %v", err, c.bad)
+	if _, _, err := parseDSN("/db?charset=utf8mb4;DROP"); err == nil {
+		t.Error("a charset that is not a name")
 	}
 }

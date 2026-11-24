@@ -5,12 +5,15 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"strconv"
 	"strings"
 	"testing"
 	"testing/iotest"
 	"time"
+
+	"github.com/darxnet/gomysql/internal/sqlhook"
 )
 
 // stateServer answers COM_QUERY by its text: "rows" with three rows,
@@ -891,5 +894,24 @@ func TestRejectReadOnly(t *testing.T) {
 
 			_ = conn.Close()
 		}
+	}
+}
+
+// sqldriver learns from RefusedReadOnly which errors of a broken
+// connection it may retry: those of a read-only server, wrapped or not.
+func TestRefusedReadOnlyHook(t *testing.T) {
+	t.Parallel()
+
+	ro := &Error{Number: 1290, Message: "running with the --read-only option"}
+
+	switch {
+	case !sqlhook.RefusedReadOnly(fmt.Errorf("%w: %w", ro, ErrBadConn)):
+		t.Error("1290 read-only")
+	case !sqlhook.RefusedReadOnly(&Error{Number: 1836}):
+		t.Error("1836")
+	case sqlhook.RefusedReadOnly(&Error{Number: 1290, Message: "running with the --secure-file-priv option"}):
+		t.Error("1290 secure-file-priv")
+	case sqlhook.RefusedReadOnly(ErrBadConn):
+		t.Error("not a server error")
 	}
 }

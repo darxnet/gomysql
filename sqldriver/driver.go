@@ -16,6 +16,9 @@
 // point into the row, as database/sql takes them best: sql.RawBytes gets
 // them without a copy, []byte and string with one, and any gets []byte.
 //
+// Rows have one result set: the others, such as those of a CALL, are
+// read and dropped.
+//
 // sql.Conn.Raw gives the gomysql.Conn, for LoadData, ScanStruct and the
 // rest of its API:
 //
@@ -29,10 +32,8 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
-	"errors"
 	"io"
 	"reflect"
-	"strings"
 	"time"
 
 	"github.com/darxnet/gomysql"
@@ -61,9 +62,10 @@ func (d Driver) Open(dsn string) (driver.Conn, error) {
 //	[user[:password]@][net[(address)]]/dbname[?param=value&...]
 //
 // The parameters that have a gomysql.Config field are tls (true,
-// skip-verify or false), collation, charset, loc, compress,
-// clientFoundRows, allowCleartextPasswords, allowPublicKeyRetrieval,
-// rejectReadOnly and connectionAttributes; timeout limits connecting. The other parameters of go-sql-driver are
+// skip-verify or false), collation, loc, compress, clientFoundRows,
+// allowCleartextPasswords, allowPublicKeyRetrieval, rejectReadOnly and
+// connectionAttributes; timeout limits connecting, and charset without
+// collation runs SET NAMES. The other parameters of go-sql-driver are
 // refused, for gomysql would not do what they ask. Any other parameter
 // sets a session variable when connecting: time_zone=%27%2B00:00%27 runs
 // SET time_zone='+00:00'.
@@ -101,7 +103,7 @@ func (c *connector) Connect(ctx context.Context) (driver.Conn, error) {
 		return nil, err
 	}
 
-	return &conn{c: cc, used: time.Now(), rejectReadOnly: c.config.RejectReadOnly}, nil
+	return &conn{c: cc, used: time.Now()}, nil
 }
 
 func (*connector) Driver() driver.Driver { return Driver{} }
@@ -110,13 +112,11 @@ func (*connector) Driver() driver.Driver { return Driver{} }
 // pings it, as the pool of gomysql does.
 const pingAfter = time.Second
 
-// conn is a gomysql.Conn as a driver.Conn.
+// conn is a gomysql.Conn as a driver.Conn. Whether it is broken is the
+// state of the gomysql.Conn, also after commands through sql.Conn.Raw.
 type conn struct {
 	c    *gomysql.Conn
-	used time.Time // the end of the last command
-	bad  bool      // broken: database/sql drops it
-
-	rejectReadOnly bool // of the Config
+	used time.Time // the end of the last command through the driver
 }
 
 var (
@@ -134,38 +134,28 @@ var (
 // Conn returns the gomysql connection, for sql.Conn.Raw.
 func (c *conn) Conn() *gomysql.Conn { return c.c }
 
-// done records the end of a command and whether err broke the connection.
-// A statement refused by a read-only server, with Config.RejectReadOnly,
-// gives driver.ErrBadConn: it did not run, so database/sql retries it on a
-// new connection, which may reach the new primary.
+// done records the end of a command. A statement refused by a read-only
+// server, with Config.RejectReadOnly, gives driver.ErrBadConn: it did not
+// run, so database/sql retries it on a new connection, which may reach the
+// new primary.
 func (c *conn) done(err error) error {
 	c.used = time.Now()
 
-	if errors.Is(err, gomysql.ErrBadConn) || errors.Is(err, sql.ErrConnDone) {
-		c.bad = true
-
-		if c.rejectReadOnly && readOnly(err) {
-			return driver.ErrBadConn
-		}
+	if err != nil && c.broken() && sqlhook.RefusedReadOnly(err) {
+		return driver.ErrBadConn
 	}
 
 	return err
 }
 
-// readOnly is the rule of gomysql's Config.RejectReadOnly: 1290 for
-// --read-only or --super-read-only, 1836.
-func readOnly(err error) bool {
-	var e *gomysql.Error
-
-	return errors.As(err, &e) && (e.Number == 1836 || e.Number == 1290 && strings.Contains(e.Message, "read-only"))
-}
+func (c *conn) broken() bool { return sqlhook.Broken(c.c) }
 
 // ready returns driver.ErrBadConn for a connection broken before: nothing
 // is sent, so database/sql may retry on another one. After a command was
 // sent, the error is that of gomysql, never driver.ErrBadConn: the command
 // may have run.
 func (c *conn) ready() error {
-	if c.bad {
+	if c.broken() {
 		return driver.ErrBadConn
 	}
 
@@ -234,16 +224,20 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 	return newRows(c, r), nil
 }
 
+// Ping returns driver.ErrBadConn for a dead connection, so that db.Ping
+// tries another one, but the error of ctx as it is: a canceled Ping does
+// not break a connection that was fine.
 func (c *conn) Ping(ctx context.Context) error {
 	if err := c.ready(); err != nil {
 		return err
 	}
 
-	if err := c.done(c.c.PingContext(ctx)); err != nil {
+	err := c.done(c.c.PingContext(ctx))
+	if err != nil && ctx.Err() == nil && c.broken() {
 		return driver.ErrBadConn
 	}
 
-	return nil
+	return err
 }
 
 // ResetSession runs before database/sql reuses the connection: a broken
@@ -251,8 +245,8 @@ func (c *conn) Ping(ctx context.Context) error {
 // a connection the server closed meanwhile is replaced instead of failing
 // the next statement. The session itself is kept, as by go-sql-driver.
 func (c *conn) ResetSession(ctx context.Context) error {
-	if c.bad {
-		return driver.ErrBadConn
+	if err := c.ready(); err != nil {
+		return err
 	}
 
 	if time.Since(c.used) > pingAfter {
@@ -262,7 +256,7 @@ func (c *conn) ResetSession(ctx context.Context) error {
 	return nil
 }
 
-func (c *conn) IsValid() bool { return !c.bad }
+func (c *conn) IsValid() bool { return !c.broken() }
 
 // CheckNamedValue accepts every argument as it is: gomysql converts them
 // itself, with uint64 above 1<<63, slices for IN (?) and sql.Named.
@@ -366,8 +360,7 @@ func (s *stmt) query(ctx context.Context, args []any) (driver.Rows, error) {
 
 func (*stmt) CheckNamedValue(*driver.NamedValue) error { return nil }
 
-// rows is gomysql.Rows as driver.Rows; nil for a statement without a
-// result set.
+// rows is gomysql.Rows as driver.Rows.
 type rows struct {
 	conn  *conn
 	r     *gomysql.Rows
@@ -385,10 +378,7 @@ var (
 
 func newRows(c *conn, r *gomysql.Rows) *rows {
 	rs := &rows{conn: c, r: r}
-	if r != nil {
-		rs.cols, _ = r.Columns()
-		rs.types, _ = r.ColumnTypes()
-	}
+	rs.cols, _ = r.Columns()
 
 	return rs
 }
@@ -396,20 +386,12 @@ func newRows(c *conn, r *gomysql.Rows) *rows {
 func (rs *rows) Columns() []string { return rs.cols }
 
 func (rs *rows) Close() error {
-	if rs.r == nil {
-		return nil
-	}
-
 	return rs.conn.done(rs.r.Close())
 }
 
 // Next scans the row into dest. Bytes, of text too, point into the row
 // until the next one: database/sql copies them, but for sql.RawBytes.
 func (rs *rows) Next(dest []driver.Value) error {
-	if rs.r == nil {
-		return io.EOF
-	}
-
 	if !rs.r.Next() {
 		if err := rs.conn.done(rs.r.Err()); err != nil {
 			return err
@@ -421,14 +403,36 @@ func (rs *rows) Next(dest []driver.Value) error {
 	return sqlhook.Values(rs.r, dest)
 }
 
-func (rs *rows) ColumnTypeDatabaseTypeName(i int) string { return rs.types[i].DatabaseTypeName() }
+func (rs *rows) colType(i int) *gomysql.ColumnType {
+	if rs.types == nil {
+		rs.types, _ = rs.r.ColumnTypes()
+	}
 
-func (rs *rows) ColumnTypeLength(i int) (int64, bool) { return rs.types[i].Length() }
-
-func (rs *rows) ColumnTypeNullable(i int) (nullable, ok bool) { return rs.types[i].Nullable() }
-
-func (rs *rows) ColumnTypePrecisionScale(i int) (precision, scale int64, ok bool) {
-	return rs.types[i].DecimalSize()
+	return rs.types[i]
 }
 
-func (rs *rows) ColumnTypeScanType(i int) reflect.Type { return rs.types[i].ScanType() }
+func (rs *rows) ColumnTypeDatabaseTypeName(i int) string { return rs.colType(i).DatabaseTypeName() }
+
+func (rs *rows) ColumnTypeLength(i int) (int64, bool) { return rs.colType(i).Length() }
+
+func (rs *rows) ColumnTypeNullable(i int) (nullable, ok bool) { return rs.colType(i).Nullable() }
+
+func (rs *rows) ColumnTypePrecisionScale(i int) (precision, scale int64, ok bool) {
+	return rs.colType(i).DecimalSize()
+}
+
+// ColumnTypeScanType is that of gomysql, but string for TIME: it comes
+// as bytes ("12:34:56"), which database/sql cannot convert to the
+// time.Duration of gomysql.
+func (rs *rows) ColumnTypeScanType(i int) reflect.Type {
+	ct := rs.colType(i)
+	if ct.DatabaseTypeName() != "TIME" {
+		return ct.ScanType()
+	}
+
+	if nullable, _ := ct.Nullable(); nullable {
+		return reflect.TypeFor[sql.NullString]()
+	}
+
+	return reflect.TypeFor[string]()
+}

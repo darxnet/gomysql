@@ -163,8 +163,15 @@ func parseParams(config *gomysql.Config, query string) (timeout time.Duration, e
 		}
 	}
 
+	// A charset without a collation gets the default collation of the
+	// server for it, as with go-sql-driver: SET NAMES, before the other
+	// session variables.
 	if charset != "" && config.Collation == "" {
-		config.Collation = charset + "_general_ci"
+		if strings.Trim(charset, "abcdefghijklmnopqrstuvwxyz0123456789_") != "" {
+			return 0, fmt.Errorf("gomysql/sqldriver: parameter charset: %q is not a character set name", charset)
+		}
+
+		config.InitCommands = append([]string{"SET NAMES " + charset}, config.InitCommands...)
 	}
 
 	return timeout, nil

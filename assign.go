@@ -57,8 +57,6 @@ func assign(dest any, v *value, col *columnDefinition) error {
 		}
 	case *any:
 		*d = v.driverValue(col)
-	case driverDest:
-		*d.v = v.refDriverValue(col)
 	case *bool:
 		return setBool(d, v)
 	case *int:
@@ -541,7 +539,7 @@ func (v *value) driverValue(col *columnDefinition) any {
 	case kindTime:
 		return v.t.time(v.loc)
 	case kindBytes:
-		return v.textDriverValue(col, false)
+		return v.textDriverValue(col)
 	default:
 		return nil
 	}
@@ -555,60 +553,65 @@ func (v *value) refDriverValue(col *columnDefinition) any {
 		return v.driverValue(col)
 	}
 
-	return v.textDriverValue(col, true)
+	if typed, ok := v.textTyped(col); ok {
+		return typed
+	}
+
+	return v.b
 }
 
 // textDriverValue is driverValue of a value sent as text: in the text
-// protocol, all of them. With ref, bytes are not copied, and text stays
-// bytes.
-func (v *value) textDriverValue(col *columnDefinition, ref bool) any {
+// protocol, all of them.
+func (v *value) textDriverValue(col *columnDefinition) any {
+	if typed, ok := v.textTyped(col); ok {
+		return typed
+	}
+
+	switch {
+	case col.Type == myTypeJSON:
+		return json.RawMessage(bytes.Clone(v.b))
+	case isText(col):
+		return string(v.b)
+	}
+
+	return bytes.Clone(v.b)
+}
+
+// textTyped parses a number, date or time sent as text into its type;
+// false for the other columns, and for text that does not parse.
+func (v *value) textTyped(col *columnDefinition) (any, bool) {
 	b := v.b
 
 	switch col.Type {
 	case myTypeLongLong:
 		if col.Flags&flagUnsigned != 0 {
-			if n, err := parseUint64(b); err == nil {
-				return n
-			}
+			n, err := parseUint64(b)
 
-			break
+			return n, err == nil
 		}
 
 		fallthrough
 	case myTypeTiny, myTypeShort, myTypeInt24, myTypeLong, myTypeYear:
-		if n, err := parseInt64(b); err == nil {
-			return n
-		}
+		n, err := parseInt64(b)
+
+		return n, err == nil
 	case myTypeFloat:
-		if f, err := strconv.ParseFloat(string(b), 32); err == nil {
-			return float32(f)
-		}
+		f, err := strconv.ParseFloat(string(b), 32)
+
+		return float32(f), err == nil
 	case myTypeDouble:
-		if f, err := strconv.ParseFloat(string(b), 64); err == nil {
-			return f
-		}
-	default:
-		if isDateTime(col) {
-			if t, ok := parseDateTime(b); ok {
-				return t.time(v.loc)
-			}
-		}
+		f, err := strconv.ParseFloat(string(b), 64)
 
-		switch {
-		case ref:
-			return b
-		case col.Type == myTypeJSON:
-			return json.RawMessage(bytes.Clone(b))
-		case isText(col):
-			return string(b)
+		return f, err == nil
+	}
+
+	if isDateTime(col) {
+		if t, ok := parseDateTime(b); ok {
+			return t.time(v.loc), true
 		}
 	}
 
-	if ref {
-		return b
-	}
-
-	return bytes.Clone(b)
+	return nil, false
 }
 
 // parseUint64 parses decimal digits, refusing anything else and overflow.

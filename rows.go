@@ -2,7 +2,6 @@ package gomysql
 
 import (
 	"database/sql"
-	"database/sql/driver"
 	"errors"
 	"fmt"
 	"math"
@@ -37,10 +36,8 @@ type Rows struct {
 	dest       []any
 	destOf     any
 
-	// sqldriver: the destinations of driverValues, into the dest database/sql
-	// passes, which starts at driverOf.
-	driverDests []any
-	driverOf    *driver.Value
+	// sqldriver: the column ScanColumn reads next.
+	cur rowCursor
 }
 
 // errRowsGone is the error of Rows whose connection was closed or
@@ -107,7 +104,7 @@ func (rows *Rows) Next() bool {
 // end ends the rows at their last packet or an error. More results are
 // read by Close.
 func (rows *Rows) end() {
-	rows.buf, rows.done = nil, true
+	rows.buf, rows.done, rows.cur = nil, true, rowCursor{}
 
 	if rows.err != nil || rows.conn.statusFlags&serverStatusMoreResultsExists == 0 {
 		rows.err = rows.release(rows.err)

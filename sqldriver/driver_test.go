@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"reflect"
@@ -297,5 +298,113 @@ func TestBytesCopied(t *testing.T) {
 				t.Errorf("%s row %d: %q %q %q", name, i, texts[i], bins[i], raws[i])
 			}
 		}
+	}
+}
+
+// A canceled Ping returns the error of its context and leaves a good
+// connection usable.
+func TestPingCanceled(t *testing.T) {
+	t.Parallel()
+
+	db := openDB(t)
+
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := conn.PingContext(ctx); !errors.Is(err, context.Canceled) {
+		t.Errorf("canceled Ping: %v", err)
+	}
+
+	if err := conn.PingContext(context.Background()); err != nil {
+		t.Errorf("Ping after: %v", err)
+	}
+}
+
+// TIME comes as bytes: its scan type is string, which works.
+func TestTimeScanType(t *testing.T) {
+	t.Parallel()
+
+	db := openDB(t)
+
+	rows, err := db.Query("SELECT TIME '12:34:56'")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	types, err := rows.ColumnTypes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dest := reflect.New(types[0].ScanType())
+
+	if !rows.Next() {
+		t.Fatal(rows.Err())
+	}
+
+	if err := rows.Scan(dest.Interface()); err != nil || fmt.Sprint(dest.Elem().Interface()) != "12:34:56" {
+		t.Errorf("into %s: %v, %v", types[0].ScanType(), dest.Elem().Interface(), err)
+	}
+}
+
+// charset without collation runs SET NAMES: the server picks the
+// collation, binary too.
+func TestCharsetDSN(t *testing.T) {
+	t.Parallel()
+
+	config := liveConfig(t, "b")
+
+	db, err := sql.Open("gomysql", "b:b@tcp("+config.Address+")/gomysql?allowPublicKeyRetrieval=true&charset=binary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	var charset string
+	if err := db.QueryRow("SELECT @@character_set_client").Scan(&charset); err != nil || charset != "binary" {
+		t.Errorf("character_set_client %q, %v", charset, err)
+	}
+}
+
+// A connection broken through sql.Conn.Raw is broken for database/sql
+// too: the next statement does not reach it.
+func TestRawBroken(t *testing.T) {
+	t.Parallel()
+
+	db := openDB(t)
+	db.SetMaxOpenConns(1)
+
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var id int64
+	if err := conn.QueryRowContext(context.Background(), "SELECT CONNECTION_ID()").Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+
+	// A deadline that passes mid-statement breaks the gomysql connection.
+	_ = conn.Raw(func(dc any) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+
+		_, err := dc.(interface{ Conn() *gomysql.Conn }).Conn().ExecContext(ctx, "DO SLEEP(2)")
+
+		return err
+	})
+
+	_ = conn.Close()
+
+	var other int64
+	if err := db.QueryRow("SELECT CONNECTION_ID()").Scan(&other); err != nil || other == id {
+		t.Errorf("after a break through Raw: %d, %v", other, err)
 	}
 }
