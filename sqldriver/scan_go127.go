@@ -5,7 +5,6 @@ package sqldriver
 import (
 	"database/sql"
 	"database/sql/driver"
-	"io"
 
 	"github.com/darxnet/gomysql/internal/sqlhook"
 )
@@ -14,17 +13,7 @@ var _ driver.RowsColumnScanner = (*rows)(nil)
 
 // NextRow reads the next row for ScanColumn; database/sql calls it instead
 // of Next since Go 1.27.
-func (rs *rows) NextRow() error {
-	if !rs.r.Next() {
-		if err := rs.conn.done(rs.r.Err()); err != nil {
-			return err
-		}
-
-		return io.EOF
-	}
-
-	return nil
-}
+func (rs *rows) NextRow() error { return rs.advance() }
 
 // ScanColumn scans column i into dest: gomysql converts the common
 // destinations itself, database/sql the rest from the driver value.

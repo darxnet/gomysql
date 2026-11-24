@@ -59,7 +59,7 @@ func (v *value) readBinary(d *decoder, col *columnDefinition, text *[]byte) {
 	case myTypeFloat:
 		v.kind, v.f, v.f32 = kindFloat, float64(math.Float32frombits(d.uint32())), true
 	case myTypeDouble:
-		v.kind, v.f = kindFloat, math.Float64frombits(d.uint64())
+		v.kind, v.f, v.f32 = kindFloat, math.Float64frombits(d.uint64()), false
 	case myTypeDate, myTypeNewDate, myTypeDatetime, myTypeTimestamp, myTypeDatetime2, myTypeTimestamp2:
 		v.kind, v.t = kindTime, readBinaryDateTime(d)
 	case myTypeTime, myTypeTime2:

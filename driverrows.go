@@ -111,26 +111,31 @@ func (rows *Rows) nextValue(c *rowCursor, v *value) error {
 	return nil
 }
 
+// malformed breaks the connection after err, a row that does not decode:
+// sqldriver then drops it, as it would after a failed Next.
+func (rows *Rows) malformed(err error) error {
+	rows.conn.breakWith(err)
+
+	return err
+}
+
 // driverValues scans the current row into dest for sqldriver: the values
-// of refDriverValue, BIT as uint64.
+// of refDriverValue through typed.
 func (rows *Rows) driverValues(dest []driver.Value) error {
 	c, err := rows.startRow()
 	if err != nil {
-		return err
+		return rows.malformed(err)
 	}
 
 	v := value{loc: rows.loc}
 
 	for i := range dest {
 		if err := rows.nextValue(&c, &v); err != nil {
-			return err
+			return rows.malformed(err)
 		}
 
 		col := &rows.columns[i]
-		if col.Type == myTypeBit && v.kind == kindBytes {
-			v.bitToUint(nil)
-		}
-
+		v.typed(col)
 		dest[i] = v.refDriverValue(col)
 	}
 

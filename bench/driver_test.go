@@ -238,3 +238,40 @@ func BenchmarkDriverString(b *testing.B) {
 	b.Run("sqldriver-prepared", func(b *testing.B) { benchStdPrepared(b, openAdapter, qCM, &id, &ext, &ts, &keep) })
 	b.Run("sqldriver-text", func(b *testing.B) { benchStdText(b, openAdapter, qCM, &id, &ext, &ts, &keep) })
 }
+
+func BenchmarkDriverNull(b *testing.B) {
+	var (
+		aud  sql.NullInt64
+		user sql.NullInt64
+		keep sql.NullInt64
+	)
+
+	b.Run("std-text", func(b *testing.B) { benchStdText(b, openStd, qAU, &aud, &user, &keep) })
+	b.Run("sqldriver-text", func(b *testing.B) { benchStdText(b, openAdapter, qAU, &aud, &user, &keep) })
+}
+
+func BenchmarkDriverAny(b *testing.B) {
+	var aud, user, keep any
+
+	b.Run("std-text", func(b *testing.B) { benchStdText(b, openStd, qAU, &aud, &user, &keep) })
+	b.Run("sqldriver-text", func(b *testing.B) { benchStdText(b, openAdapter, qAU, &aud, &user, &keep) })
+}
+
+func BenchmarkDriverPoint(b *testing.B) {
+	for _, c := range []struct {
+		name string
+		open func(*testing.B) *sql.DB
+	}{{"std", openStd}, {"sqldriver", openAdapter}} {
+		b.Run(c.name, func(b *testing.B) {
+			db := c.open(b)
+			var id uint64
+			var ext string
+			b.ReportAllocs()
+			for b.Loop() {
+				if err := db.QueryRow("SELECT id, ext FROM cm WHERE id = ?", 1).Scan(&id, &ext); err != nil && err != sql.ErrNoRows {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

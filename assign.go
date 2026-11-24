@@ -545,26 +545,22 @@ func (v *value) driverValue(col *columnDefinition) any {
 	}
 }
 
-// refDriverValue is driverValue for sqldriver: the bytes of text, JSON,
-// binary strings and the rest point into the row, as database/sql copies
-// them where it needs.
+// refDriverValue is driverValue for sqldriver, of a value through
+// parseText: the bytes of text, JSON, binary strings and the rest point
+// into the row, as database/sql copies them where it needs.
 func (v *value) refDriverValue(col *columnDefinition) any {
-	if v.kind != kindBytes {
-		return v.driverValue(col)
+	if v.kind == kindBytes {
+		return v.b
 	}
 
-	if typed, ok := v.textTyped(col); ok {
-		return typed
-	}
-
-	return v.b
+	return v.driverValue(col)
 }
 
 // textDriverValue is driverValue of a value sent as text: in the text
 // protocol, all of them.
 func (v *value) textDriverValue(col *columnDefinition) any {
-	if typed, ok := v.textTyped(col); ok {
-		return typed
+	if t := *v; t.parseText(col) {
+		return t.driverValue(col)
 	}
 
 	switch {
@@ -577,41 +573,59 @@ func (v *value) textDriverValue(col *columnDefinition) any {
 	return bytes.Clone(v.b)
 }
 
-// textTyped parses a number, date or time sent as text into its type;
+// parseText turns a number, date or time sent as text into its kind;
 // false for the other columns, and for text that does not parse.
-func (v *value) textTyped(col *columnDefinition) (any, bool) {
+func (v *value) parseText(col *columnDefinition) bool {
 	b := v.b
 
 	switch col.Type {
 	case myTypeLongLong:
 		if col.Flags&flagUnsigned != 0 {
 			n, err := parseUint64(b)
+			if err != nil {
+				return false
+			}
 
-			return n, err == nil
+			v.kind, v.i = kindUint, n
+
+			return true
 		}
 
 		fallthrough
 	case myTypeTiny, myTypeShort, myTypeInt24, myTypeLong, myTypeYear:
 		n, err := parseInt64(b)
+		if err != nil {
+			return false
+		}
 
-		return n, err == nil
-	case myTypeFloat:
-		f, err := strconv.ParseFloat(string(b), 32)
+		v.kind, v.i = kindInt, uint64(n) //nolint:gosec // G115: int64 bits
 
-		return float32(f), err == nil
-	case myTypeDouble:
-		f, err := strconv.ParseFloat(string(b), 64)
+		return true
+	case myTypeFloat, myTypeDouble:
+		bits := 64
+		if col.Type == myTypeFloat {
+			bits = 32
+		}
 
-		return f, err == nil
+		f, err := strconv.ParseFloat(string(b), bits)
+		if err != nil {
+			return false
+		}
+
+		v.kind, v.f, v.f32 = kindFloat, f, bits == 32
+
+		return true
 	}
 
 	if isDateTime(col) {
 		if t, ok := parseDateTime(b); ok {
-			return t.time(v.loc), true
+			v.kind, v.t = kindTime, t
+
+			return true
 		}
 	}
 
-	return nil, false
+	return false
 }
 
 // parseUint64 parses decimal digits, refusing anything else and overflow.

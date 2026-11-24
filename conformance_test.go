@@ -1270,3 +1270,31 @@ func TestConformanceStmtRecreatedTable(t *testing.T) {
 		t.Errorf("stored %q, %v; want %q", got, err, "\x00\xffa")
 	}
 }
+
+// A DOUBLE after a FLOAT in one row is a float64: the decoder cleared the
+// float32 flag only for FLOAT, so the DOUBLE came out as a float32.
+func TestConformanceFloatThenDouble(t *testing.T) {
+	t.Parallel()
+
+	c := confConn(t, "b", "b")
+	mustExec(t, c, "CREATE TEMPORARY TABLE float_double (f FLOAT, d DOUBLE)")
+	mustExec(t, c, "INSERT INTO float_double VALUES (1.5, 1e300)")
+
+	for _, m := range confModes {
+		rows, err := m.query(c, "SELECT f, d FROM float_double")
+		if err != nil {
+			t.Fatalf("%s: %v", m.name, err)
+		}
+
+		var f, d any
+		if !rows.Next() || rows.Scan(&f, &d) != nil {
+			t.Fatalf("%s: no row", m.name)
+		}
+
+		_ = rows.Close()
+
+		if _, ok := f.(float32); !ok || d != any(1e300) {
+			t.Errorf("%s: FLOAT %T %v, DOUBLE %T %v", m.name, f, f, d, d)
+		}
+	}
+}

@@ -36,7 +36,7 @@ type Rows struct {
 	dest       []any
 	destOf     any
 
-	// sqldriver: the column ScanColumn reads next.
+	// sqldriver: the column ScanColumn reads next, i -1 before column 0.
 	cur rowCursor
 }
 
@@ -91,7 +91,7 @@ func (rows *Rows) Next() bool {
 	case buf[0] == iERR:
 		rows.err = rows.conn.processERRPacket(buf)
 	default:
-		rows.buf, rows.text = buf, rows.text[:0]
+		rows.buf, rows.text, rows.cur.i = buf, rows.text[:0], -1
 
 		return true
 	}
@@ -104,7 +104,7 @@ func (rows *Rows) Next() bool {
 // end ends the rows at their last packet or an error. More results are
 // read by Close.
 func (rows *Rows) end() {
-	rows.buf, rows.done, rows.cur = nil, true, rowCursor{}
+	rows.buf, rows.done, rows.cur = nil, true, rowCursor{i: -1}
 
 	if rows.err != nil || rows.conn.statusFlags&serverStatusMoreResultsExists == 0 {
 		rows.err = rows.release(rows.err)

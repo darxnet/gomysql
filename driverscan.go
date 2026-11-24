@@ -4,51 +4,64 @@ import (
 	"bytes"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"math"
 	"strconv"
 	"time"
 )
 
+// errColumnOrder is the error of ScanColumn calls out of column order;
+// database/sql makes them in order, from column 0.
+var errColumnOrder = errors.New("gomysql: columns scanned out of order")
+
 // scanColumn scans column i of the current row into dest for sqldriver,
 // for the destinations where gomysql converts exactly as database/sql;
-// for the others it returns the driver value for sql.ConvertAssign.
+// for the others it returns the driver value for sql.ConvertAssign. The
+// columns come in order: column 0 starts the row again.
 func (rows *Rows) scanColumn(i int, dest any) (driver.Value, bool, error) {
-	if i == 0 || rows.cur.i != i {
+	if i == 0 {
 		c, err := rows.startRow()
 		if err != nil {
-			return nil, false, err
-		}
-
-		var skip value
-		for c.i < i {
-			if err := rows.nextValue(&c, &skip); err != nil {
-				return nil, false, err
-			}
+			return nil, false, rows.malformed(err)
 		}
 
 		rows.cur = c
+	} else if rows.cur.i != i {
+		return nil, false, errColumnOrder
 	}
 
 	v := value{loc: rows.loc}
 	if err := rows.nextValue(&rows.cur, &v); err != nil {
-		return nil, false, err
+		return nil, false, rows.malformed(err)
 	}
 
 	col := &rows.columns[i]
-	if assignDirect(dest, &v, col) {
-		return nil, true, nil
-	}
+	v.typed(col)
 
-	if col.Type == myTypeBit && v.kind == kindBytes {
-		v.bitToUint(nil)
+	if assignDirect(dest, &v) || assignNull(dest, &v) {
+		return nil, true, nil
 	}
 
 	return v.refDriverValue(col), false, nil
 }
 
-// assignDirect stores v into dest if database/sql would store the same
-// from refDriverValue without an error.
-func assignDirect(dest any, v *value, col *columnDefinition) bool {
+// typed gives bytes their value for sqldriver: BIT as uint64, numbers and
+// dates sent as text parsed.
+func (v *value) typed(col *columnDefinition) {
+	if v.kind != kindBytes {
+		return
+	}
+
+	if col.Type == myTypeBit {
+		v.bitToUint(nil)
+	} else {
+		v.parseText(col)
+	}
+}
+
+// assignDirect stores v, through typed, into dest if database/sql would
+// store the same from refDriverValue without an error.
+func assignDirect(dest any, v *value) bool {
 	switch v.kind {
 	case kindInt:
 		return assignInt(dest, v.i, true)
@@ -57,71 +70,110 @@ func assignDirect(dest any, v *value, col *columnDefinition) bool {
 	case kindFloat:
 		switch d := dest.(type) {
 		case *float64:
-			if !v.f32 {
+			if !v.f32 && d != nil {
 				*d = v.f
 				return true
 			}
 		case *float32:
-			if v.f32 {
+			if v.f32 && d != nil {
 				*d = float32(v.f)
 				return true
 			}
 		}
 	case kindTime:
-		if d, ok := dest.(*time.Time); ok {
+		if d, ok := dest.(*time.Time); ok && d != nil {
 			*d = v.t.time(v.loc)
 			return true
 		}
 	case kindBytes:
-		return assignText(dest, v, col)
+		return assignBytes(dest, v.b)
 	}
 
 	return false
 }
 
-// assignText is assignDirect of a value in the text protocol, or bytes
-// of the binary one.
-func assignText(dest any, v *value, col *columnDefinition) bool {
-	switch col.Type {
-	case myTypeTiny, myTypeShort, myTypeInt24, myTypeLong, myTypeYear:
-		n, err := parseInt64(v.b)
-		return err == nil && assignInt(dest, uint64(n), true) //nolint:gosec // G115: int64 bits
-	case myTypeLongLong:
-		if col.Flags&flagUnsigned != 0 {
-			n, err := parseUint64(v.b)
-			return err == nil && assignInt(dest, n, false)
-		}
-
-		n, err := parseInt64(v.b)
-
-		return err == nil && assignInt(dest, uint64(n), true) //nolint:gosec // G115: int64 bits
-	case myTypeFloat, myTypeDouble, myTypeBit:
-		return false
-	}
-
-	if isDateTime(col) {
-		if d, ok := dest.(*time.Time); ok {
-			if t, ok := parseDateTime(v.b); ok {
-				*d = t.time(v.loc)
-				return true
-			}
-		}
-
-		return false
-	}
-
+// assignBytes is assignDirect of bytes: aliased into sql.RawBytes, copied
+// into []byte and string, and parsed into floats as database/sql parses
+// them (DECIMAL, text).
+func assignBytes(dest any, b []byte) bool {
 	switch d := dest.(type) {
 	case *sql.RawBytes:
-		*d = v.b
+		if d != nil {
+			*d = b
+			return true
+		}
 	case *string:
-		*d = string(v.b)
+		if d != nil {
+			*d = string(b)
+			return true
+		}
 	case *[]byte:
-		*d = bytes.Clone(v.b)
-	default:
-		return false
+		if d != nil {
+			*d = bytes.Clone(b)
+			return true
+		}
+	case *float64:
+		if f, err := strconv.ParseFloat(string(b), 64); err == nil && d != nil {
+			*d = f
+			return true
+		}
+	case *float32:
+		if f, err := strconv.ParseFloat(string(b), 32); err == nil && d != nil {
+			*d = float32(f)
+			return true
+		}
 	}
 
-	return true
+	return false
+}
+
+// assignNull is assignDirect into the sql.Null types, as their Scan
+// methods would store v.
+func assignNull(dest any, v *value) bool {
+	switch d := dest.(type) {
+	case *sql.NullInt64:
+		if d != nil && v.kind == kindNull {
+			*d = sql.NullInt64{}
+			return true
+		}
+
+		if d != nil && assignDirect(&d.Int64, v) {
+			d.Valid = true
+			return true
+		}
+	case *sql.NullString:
+		if d != nil && v.kind == kindNull {
+			*d = sql.NullString{}
+			return true
+		}
+
+		if d != nil && assignDirect(&d.String, v) {
+			d.Valid = true
+			return true
+		}
+	case *sql.NullTime:
+		if d != nil && v.kind == kindNull {
+			*d = sql.NullTime{}
+			return true
+		}
+
+		if d != nil && assignDirect(&d.Time, v) {
+			d.Valid = true
+			return true
+		}
+	case *sql.NullFloat64:
+		if d != nil && v.kind == kindNull {
+			*d = sql.NullFloat64{}
+			return true
+		}
+
+		if d != nil && assignDirect(&d.Float64, v) {
+			d.Valid = true
+			return true
+		}
+	}
+
+	return false
 }
 
 // assignInt stores an integer, int64 bits if signed, into an integer or
@@ -151,6 +203,10 @@ func assignInt(dest any, u uint64, signed bool) bool {
 	case *uint8:
 		return setUint(d, u, neg, math.MaxUint8)
 	case *string:
+		if d == nil {
+			return false
+		}
+
 		if signed {
 			*d = strconv.FormatInt(int64(u), 10) //nolint:gosec // G115: int64 bits
 		} else {
@@ -164,6 +220,10 @@ func assignInt(dest any, u uint64, signed bool) bool {
 }
 
 func setInt[T signed](d *T, u uint64, neg bool, lo, hi int64) bool {
+	if d == nil {
+		return false
+	}
+
 	if neg {
 		if int64(u) < lo { //nolint:gosec // G115: int64 bits
 			return false
@@ -178,7 +238,7 @@ func setInt[T signed](d *T, u uint64, neg bool, lo, hi int64) bool {
 }
 
 func setUint[T unsigned](d *T, u uint64, neg bool, hi uint64) bool {
-	if neg || u > hi {
+	if d == nil || neg || u > hi {
 		return false
 	}
 

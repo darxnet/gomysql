@@ -134,13 +134,21 @@ var (
 // Conn returns the gomysql connection, for sql.Conn.Raw.
 func (c *conn) Conn() *gomysql.Conn { return c.c }
 
-// done records the end of a command. A statement refused by a read-only
-// server, with Config.RejectReadOnly, gives driver.ErrBadConn: it did not
-// run, so database/sql retries it on a new connection, which may reach the
-// new primary.
+// done records the end of a command.
 func (c *conn) done(err error) error {
 	c.used = time.Now()
 
+	return err
+}
+
+// started is done for the start of a statement: Exec, Query, Prepare or
+// Begin. One refused by a read-only server, with Config.RejectReadOnly,
+// gives driver.ErrBadConn: it did not run, so database/sql retries it on
+// a new connection, which may reach the new primary. Later refusals, as
+// while reading rows or at Commit, come as they are: work may have run.
+// (A procedure that ran in part before the refusal is retried too.)
+func (c *conn) started(err error) error {
+	err = c.done(err)
 	if err != nil && c.broken() && sqlhook.RefusedReadOnly(err) {
 		return driver.ErrBadConn
 	}
@@ -172,7 +180,7 @@ func (c *conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, e
 	}
 
 	st, err := c.c.PrepareContext(ctx, query)
-	if derr := c.done(err); derr != nil {
+	if derr := c.started(err); derr != nil {
 		return nil, derr
 	}
 
@@ -191,7 +199,7 @@ func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 	}
 
 	t, err := c.c.BeginTx(ctx, &sql.TxOptions{Isolation: sql.IsolationLevel(opts.Isolation), ReadOnly: opts.ReadOnly})
-	if derr := c.done(err); derr != nil {
+	if derr := c.started(err); derr != nil {
 		return nil, derr
 	}
 
@@ -204,7 +212,7 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	}
 
 	res, err := c.c.ExecContext(ctx, query, namedArgs(args)...)
-	if derr := c.done(err); derr != nil {
+	if derr := c.started(err); derr != nil {
 		return nil, derr
 	}
 
@@ -217,7 +225,7 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 	}
 
 	r, err := c.c.QueryContext(ctx, query, namedArgs(args)...)
-	if derr := c.done(err); derr != nil {
+	if derr := c.started(err); derr != nil {
 		return nil, derr
 	}
 
@@ -281,16 +289,6 @@ func namedArgs(args []driver.NamedValue) []any {
 	return out
 }
 
-// valueArgs is namedArgs of the arguments of Stmt.Exec and Stmt.Query.
-func valueArgs(args []driver.Value) []any {
-	out := make([]any, len(args))
-	for i, a := range args {
-		out[i] = a
-	}
-
-	return out
-}
-
 type tx struct {
 	conn *conn
 	t    *gomysql.Tx
@@ -310,14 +308,16 @@ var (
 	_ driver.NamedValueChecker = (*stmt)(nil)
 )
 
-// Close does nothing: the statement stays cached by its connection.
+// Close is that of gomysql.Stmt, which keeps the statement cached by its
+// connection.
 func (s *stmt) Close() error { return s.st.Close() }
 
 // NumInput is -1: gomysql counts the arguments, :name ones too.
 func (*stmt) NumInput() int { return -1 }
 
+// Exec and Query are of driver.Stmt; database/sql calls the Context ones.
 func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
-	return s.exec(context.Background(), valueArgs(args))
+	return s.ExecContext(context.Background(), named(args))
 }
 
 func (s *stmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
@@ -330,7 +330,7 @@ func (s *stmt) exec(ctx context.Context, args []any) (driver.Result, error) {
 	}
 
 	res, err := s.st.ExecContext(ctx, args...)
-	if derr := s.conn.done(err); derr != nil {
+	if derr := s.conn.started(err); derr != nil {
 		return nil, derr
 	}
 
@@ -338,7 +338,17 @@ func (s *stmt) exec(ctx context.Context, args []any) (driver.Result, error) {
 }
 
 func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
-	return s.query(context.Background(), valueArgs(args))
+	return s.QueryContext(context.Background(), named(args))
+}
+
+// named returns args as positional driver.NamedValue.
+func named(args []driver.Value) []driver.NamedValue {
+	out := make([]driver.NamedValue, len(args))
+	for i, a := range args {
+		out[i] = driver.NamedValue{Ordinal: i + 1, Value: a}
+	}
+
+	return out
 }
 
 func (s *stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
@@ -351,7 +361,7 @@ func (s *stmt) query(ctx context.Context, args []any) (driver.Rows, error) {
 	}
 
 	r, err := s.st.QueryContext(ctx, args...)
-	if derr := s.conn.done(err); derr != nil {
+	if derr := s.conn.started(err); derr != nil {
 		return nil, derr
 	}
 
@@ -392,15 +402,24 @@ func (rs *rows) Close() error {
 // Next scans the row into dest. Bytes, of text too, point into the row
 // until the next one: database/sql copies them, but for sql.RawBytes.
 func (rs *rows) Next(dest []driver.Value) error {
-	if !rs.r.Next() {
-		if err := rs.conn.done(rs.r.Err()); err != nil {
-			return err
-		}
-
-		return io.EOF
+	if err := rs.advance(); err != nil {
+		return err
 	}
 
 	return sqlhook.Values(rs.r, dest)
+}
+
+// advance reads the next row: io.EOF at the end.
+func (rs *rows) advance() error {
+	if rs.r.Next() {
+		return nil
+	}
+
+	if err := rs.conn.done(rs.r.Err()); err != nil {
+		return err
+	}
+
+	return io.EOF
 }
 
 func (rs *rows) colType(i int) *gomysql.ColumnType {
