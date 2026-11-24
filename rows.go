@@ -113,6 +113,65 @@ func (rows *Rows) end() {
 	}
 }
 
+// NextResultSet moves to the next result set of the rows, such as the
+// next SELECT of a stored procedure (CALL), reading what is left of the
+// current one; Next then reads its rows. It reports false when no result
+// set with columns follows, or on an error, which Err returns. Results
+// without columns, as the status of the CALL, are skipped.
+func (rows *Rows) NextResultSet() bool {
+	conn := rows.conn
+	if rows.closed || conn.rows != rows { // read to the end and released
+		return false
+	}
+
+	if !rows.done {
+		rows.buf, rows.done = nil, true
+
+		if err := conn.readUntilEOF(); err != nil {
+			rows.err = rows.release(err)
+
+			return false
+		}
+	}
+
+	for conn.statusFlags&serverStatusMoreResultsExists != 0 {
+		n, err := conn.readResultHeader()
+		if err != nil {
+			rows.err = rows.release(err)
+
+			return false
+		}
+
+		if n == 0 {
+			continue
+		}
+
+		columns := make([]columnDefinition, n)
+		if err := conn.readColumns(columns); err != nil {
+			rows.err = rows.release(err)
+
+			return false
+		}
+
+		rows.columns, rows.done, rows.buf, rows.cur = columns, false, nil, rowCursor{i: -1}
+		rows.text = rows.text[:0]
+		rows.structType, rows.plan = nil, nil
+		rows.releaseDest()
+
+		return true
+	}
+
+	rows.err = rows.release(nil)
+
+	return false
+}
+
+// hasNextResultSet reports whether more results may follow the rows read
+// to their end, as the server said; for sqldriver.
+func (rows *Rows) hasNextResultSet() bool {
+	return rows.done && rows.conn.rows == rows && rows.conn.statusFlags&serverStatusMoreResultsExists != 0
+}
+
 // Err returns the error that ended the rows, if any.
 func (rows *Rows) Err() error {
 	return rows.err

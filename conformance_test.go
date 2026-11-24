@@ -1447,3 +1447,97 @@ func TestConformanceCall(t *testing.T) {
 		t.Errorf("out of sync after CALL: %v", err)
 	}
 }
+
+// NextResultSet reads every SELECT of a procedure in both protocols: the
+// columns change, an unread set is skipped, ScanStruct follows the new
+// columns, and the status of the CALL is not a result set.
+func TestConformanceNextResultSet(t *testing.T) {
+	t.Parallel()
+
+	c := confConn(t, "root", "root")
+
+	mustExec(t, c, "DROP PROCEDURE IF EXISTS next_sets")
+	mustExec(t, c, "CREATE PROCEDURE next_sets() BEGIN "+
+		"SELECT 1 AS a; SELECT 2 AS b, 'x' AS c; SELECT 3 AS d UNION SELECT 4; END")
+
+	defer func() { _, _ = c.Exec("DROP PROCEDURE IF EXISTS next_sets") }()
+
+	want := []string{"a=1", "b=2 c=x", "d=3", "d=4"}
+
+	for _, m := range confModes {
+		r, err := m.query(c, "CALL next_sets()")
+		if err != nil {
+			t.Fatalf("%s: %v", m.name, err)
+		}
+
+		rows := r.(*gomysql.Rows) //nolint:forcetypeassert // confModes return gomysql Rows
+		got := readSets(t, rows)
+
+		if err := rows.Err(); err != nil || strings.Join(got, ";") != strings.Join(want, ";") {
+			t.Errorf("%s: %q, %v; want %q", m.name, got, err, want)
+		}
+
+		if err := rows.Close(); err != nil {
+			t.Errorf("%s: Close: %v", m.name, err)
+		}
+	}
+
+	// The first set unread, then a struct of the second.
+	rows, err := c.Query("CALL next_sets()")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var second struct {
+		B int
+		C string
+	}
+
+	if !rows.NextResultSet() || !rows.Next() || rows.ScanStruct(&second) != nil || second.B != 2 || second.C != "x" {
+		t.Errorf("second set as a struct: %+v, %v", second, rows.Err())
+	}
+
+	if err := rows.Close(); err != nil {
+		t.Errorf("Close with sets left: %v", err)
+	}
+
+	if err := c.Ping(); err != nil {
+		t.Errorf("out of sync: %v", err)
+	}
+}
+
+// readSets reads every result set of rows as "column=value" lines.
+func readSets(t *testing.T, rows *gomysql.Rows) []string {
+	t.Helper()
+
+	var got []string
+
+	for more := true; more; more = rows.NextResultSet() {
+		cols, err := rows.Columns()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		for rows.Next() {
+			values := make([]any, len(cols))
+			dests := make([]any, len(cols))
+
+			for i := range values {
+				dests[i] = &values[i]
+			}
+
+			if err := rows.Scan(dests...); err != nil {
+				t.Fatal(err)
+			}
+
+			parts := make([]string, len(cols))
+			for i := range cols {
+				parts[i] = fmt.Sprintf("%s=%v", cols[i], values[i])
+			}
+
+			got = append(got, strings.Join(parts, " "))
+		}
+	}
+
+	return got
+}
