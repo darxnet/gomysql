@@ -22,26 +22,25 @@ var valuerType = reflect.TypeFor[driver.Valuer]()
 // points to (nil is NULL), and a type based on a basic type is converted
 // to it. json.RawMessage is a string.
 func convertArg(arg any) (any, error) {
-	switch b := arg.(type) {
+	switch v := arg.(type) {
+	case nil, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64,
+		float32, float64, bool, string, time.Time:
+		return arg, nil
 	case []byte:
-		if b == nil {
+		if v == nil {
 			return nil, nil //nolint:nilnil // NULL
 		}
+
+		return arg, nil
 	case json.RawMessage:
 		// Text: MySQL refuses JSON from a binary string.
-		if b == nil {
+		if v == nil {
 			return nil, nil //nolint:nilnil // NULL
 		}
 
-		return string(b), nil
-	}
-
-	switch v := arg.(type) {
+		return string(v), nil
 	case sql.NamedArg:
 		return nil, fmt.Errorf("gomysql: sql.Named %q among positional arguments", v.Name)
-	case nil, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64,
-		float32, float64, bool, string, []byte, time.Time:
-		return arg, nil
 	}
 
 	rv := reflect.ValueOf(arg)
