@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net"
 	"strings"
 	"time"
 )
@@ -206,11 +205,4 @@ func (conn *Conn) unwatch() {
 
 	_ = conn.conn.SetDeadline(time.Time{})
 	conn.ctx, conn.stopWatch = nil, nil
-}
-
-// dialContext connects the socket, within ctx.
-func (conn *Conn) dialContext(ctx context.Context) (net.Conn, error) {
-	var d net.Dialer
-
-	return d.DialContext(ctx, conn.config.Network, conn.config.Address)
 }

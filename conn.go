@@ -60,7 +60,9 @@ type Conn struct {
 }
 
 func (conn *Conn) dial(ctx context.Context) error {
-	nc, err := conn.dialContext(ctx)
+	var d net.Dialer
+
+	nc, err := d.DialContext(ctx, conn.config.Network, conn.config.Address)
 	if err != nil {
 		return err
 	}
