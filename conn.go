@@ -95,10 +95,8 @@ func (conn *Conn) ReconnectContext(ctx context.Context) error {
 	conn.capFlags = 0
 	conn.dropRows()
 	conn.unwatch()
-	conn.endTx()
+	conn.newSession()
 	conn.state, conn.cause = stateIdle, nil
-	conn.limits = serverLimits{}
-	conn.session++
 
 	if err := conn.dial(ctx); err != nil {
 		conn.breakWith(err)
