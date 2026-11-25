@@ -418,8 +418,9 @@ res, err := conn.LoadData("LOAD DATA LOCAL INFILE 'rows.csv' INTO TABLE t FIELDS
 
 ## Performance
 
-CPU time per row, reading 1M rows from MySQL 8.4 on an Apple M3 Pro. Rows
-show what the columns are scanned into.
+CPU time per row, reading 1M rows from MySQL 8.4.11 in Docker, against
+go-sql-driver/mysql v1.10.2 (Apple M3 Pro, Go 1.27.2). Rows show what the
+columns are scanned into.
 
 | | gomysql | sqldriver (Go 1.27), text | sqldriver (Go 1.27), prepared | go-sql-driver, text | go-sql-driver, prepared |
 |---|---|---|---|---|---|
@@ -441,7 +442,9 @@ A query for a single row by id:
 | memory | 528 B | 782 B | 864 B |
 | allocations | 7 | 14 | 23 |
 
-The comparison benchmarks are in the `bench` module.
+The comparison benchmarks are in the [bench](bench) module. Start a server
+with `scripts/testdb.sh mysql:8.4 3306`, then run
+`GOMYSQL_ADDR=127.0.0.1:3306 go test -C bench -run '^$' -bench . -benchmem`.
 
 ## Compatibility
 
