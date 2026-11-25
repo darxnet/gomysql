@@ -4,9 +4,11 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -120,14 +122,7 @@ func parseParams(config *gomysql.Config, query string) (timeout time.Duration, e
 	var charset string
 
 	// Sorted, so that the session variables are set in a known order.
-	keys := make([]string, 0, len(params))
-	for key := range params {
-		keys = append(keys, key)
-	}
-
-	slices.Sort(keys)
-
-	for _, key := range keys {
+	for _, key := range slices.Sorted(maps.Keys(params)) {
 		if len(params[key]) > 1 {
 			return 0, fmt.Errorf("gomysql/sqldriver: parameter %s given more than once", key)
 		}
@@ -192,29 +187,35 @@ func parseParams(config *gomysql.Config, query string) (timeout time.Duration, e
 	return timeout, nil
 }
 
+// parseTLS accepts skip-verify in any case, as go-sql-driver, and the
+// values of parseBool.
 func parseTLS(value string) (*tls.Config, error) {
-	switch strings.ToLower(value) {
-	case "true", "1":
-		return &tls.Config{MinVersion: tls.VersionTLS12}, nil
-	case "skip-verify":
+	if strings.EqualFold(value, "skip-verify") {
 		return &tls.Config{InsecureSkipVerify: true}, nil //nolint:gosec // G402: asked for by the DSN
-	case "false", "0":
+	}
+
+	on, err := strconv.ParseBool(value)
+
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("%q: only true, skip-verify and false; "+
+			"a tls.Config of its own goes through NewConnector", value)
+	case on:
+		return &tls.Config{MinVersion: tls.VersionTLS12}, nil
+	default:
 		return nil, nil //nolint:nilnil // no TLS
 	}
-
-	return nil, fmt.Errorf("%q: only true, skip-verify and false; "+
-		"a tls.Config of its own goes through NewConnector", value)
 }
 
+// parseBool accepts the values of strconv.ParseBool: those of
+// go-sql-driver (1, true, TRUE, True and the false ones), and t, T, f, F.
 func parseBool(key, value string) (bool, error) {
-	switch value {
-	case "1", "true", "TRUE", "True":
-		return true, nil
-	case "0", "false", "FALSE", "False":
-		return false, nil
+	b, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("%s=%q: not a boolean", key, value)
 	}
 
-	return false, fmt.Errorf("%s=%q: not a boolean", key, value)
+	return b, nil
 }
 
 // parseAttrs parses key:value,key:value.
