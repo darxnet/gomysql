@@ -167,12 +167,11 @@ The connections behave as `Conn` does:
 - **Stored procedures:** `rows.NextResultSet()` reads the next result set of a
   `CALL`.
 
-`sql.Conn.Raw` gives the `*gomysql.Conn`, for `LoadData`, `ScanStruct` and the
-rest of the native API:
+`sqldriver.Raw` gives the `*gomysql.Conn` under a `*sql.Conn`, for `LoadData`,
+`ScanStruct` and the rest of the native API:
 
 ```go
-err := sqlConn.Raw(func(dc any) error {
-	conn := dc.(interface{ Conn() *gomysql.Conn }).Conn()
+err := sqldriver.Raw(sqlConn, func(conn *gomysql.Conn) error {
 	_, err := conn.LoadData("LOAD DATA LOCAL INFILE 'x' INTO TABLE t", r)
 	return err
 })

@@ -27,11 +27,10 @@
 // idle connection is pinged before it is reused after a second, so that
 // one the server closed is replaced.
 //
-// sql.Conn.Raw gives the gomysql.Conn, for LoadData, ScanStruct and the
-// rest of its API:
+// Raw gives the gomysql.Conn under a sql.Conn, for LoadData, ScanStruct and
+// the rest of its API:
 //
-//	err := conn.Raw(func(dc any) error {
-//		c := dc.(interface{ Conn() *gomysql.Conn }).Conn()
+//	err := sqldriver.Raw(sqlConn, func(conn *gomysql.Conn) error {
 //		...
 //	})
 package sqldriver
@@ -143,8 +142,18 @@ var (
 	_ driver.NamedValueChecker  = (*conn)(nil)
 )
 
-// Conn returns the gomysql connection, for sql.Conn.Raw.
-func (c *conn) Conn() *gomysql.Conn { return c.c }
+// Raw calls f with the gomysql connection under c, through sql.Conn.Raw.
+// The connection stays c's: f must not keep it or close it.
+func Raw(c *sql.Conn, f func(conn *gomysql.Conn) error) error {
+	return c.Raw(func(dc any) error {
+		cn, ok := dc.(*conn)
+		if !ok {
+			return fmt.Errorf("gomysql/sqldriver: Raw on a %T connection, not gomysql", dc)
+		}
+
+		return f(cn.c)
+	})
+}
 
 // done records the end of a command.
 func (c *conn) done(err error) error {
