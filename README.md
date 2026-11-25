@@ -4,16 +4,18 @@
 [![Go](https://github.com/darxnet/gomysql/actions/workflows/release.yml/badge.svg)](https://github.com/darxnet/gomysql/actions/workflows/release.yml)
 [![Coverage](https://codecov.io/gh/darxnet/gomysql/graph/badge.svg)](https://codecov.io/gh/darxnet/gomysql)
 
-`gomysql` is a MySQL and MariaDB client for Go, built for heavy reads. It
-streams result rows without per-row allocations and uses 2–4× less client CPU
-than `database/sql` with `go-sql-driver/mysql`. Its API follows `database/sql`,
-and its `sqldriver` package plugs it into `database/sql` itself.
+A MySQL and MariaDB client for Go, made for programs that read a lot.
 
-It is not related to
+- Reads rows without allocating memory for each one.
+- Uses 2–4× less CPU than `database/sql` with `go-sql-driver/mysql`.
+- Has an API that looks like `database/sql`, and also works as a
+  `database/sql` driver.
+
+Not to be confused with
 [go-mysql-org/go-mysql](https://github.com/go-mysql-org/go-mysql), a toolkit
-for the replication protocol.
+for MySQL replication.
 
-**Status:** the API follows `database/sql` closely but is not stable until v1.
+**Status:** the API may still change before v1.
 
 - [Quick start](#quick-start)
 - [The pool](#the-pool)
@@ -62,14 +64,14 @@ for rows.Next() {
 return rows.Err()
 ```
 
-A `Conn` is one connection and is not safe for concurrent use. Until the
-`Rows` of a query are read to the end or closed, other commands on the
-connection fail with `ErrBusy`. Nothing is sent in that case.
+A `Conn` is a single connection. Use it from one goroutine at a time. While a
+query's `Rows` are open, other calls on the same connection return `ErrBusy`
+(nothing is sent to the server). Read the rows to the end or close them first.
 
 ## The pool
 
-`Open` returns a `DB`, a pool safe for concurrent use. Like `sql.Open`, it
-connects only when a connection is needed:
+`Open` creates a `DB`: a pool of connections that many goroutines can share.
+Like `sql.Open`, it does not connect until a connection is needed.
 
 ```go
 db, err := gomysql.Open(config)
@@ -78,45 +80,46 @@ if err != nil {
 }
 defer db.Close()
 
-conn, err := db.Conn(ctx) // waits within ctx if the pool is full
+conn, err := db.Conn(ctx) // waits (within ctx) if all connections are busy
 if err != nil {
 	return err
 }
-defer conn.Close() // returns the connection to the pool
+defer conn.Close() // gives the connection back to the pool
 ```
 
-`DB` has no `Query` or `Exec` of its own. `db.Conn` gives a plain `*Conn` with
-all its methods, and `Close` returns it to the pool. Do not use it after
-`Close`, because another goroutine may have it by then. `conn.Hijack()` takes a
-connection out of the pool: its place is freed, and `Close` really closes it.
+`DB` has no `Query` or `Exec`. Take a connection with `db.Conn`, use it, then
+`Close` it. Don't touch it after `Close`: another goroutine may already be
+using it. To keep a connection for yourself, call `conn.Hijack()`. It leaves
+the pool, and its `Close` really closes it.
 
-The setters are those of `database/sql`. The defaults differ:
+The settings are the same as in `database/sql`, with different defaults:
 
 | Setting | Default |
 |---|---|
-| `SetMaxOpenConns` | max(4, GOMAXPROCS), never above the connection limit of the account (`max_user_connections`, else `max_connections`) less 5, left to administrators and migrations |
-| `SetMaxIdleConns` | all of them (`database/sql` keeps 2, which makes connections open and close under load) |
-| `SetConnMaxIdleTime` | 65 s before the server's `wait_timeout` (half of it below 130 s); none if the server does not say |
-| `SetConnMaxLifetime` | 30 minutes, each connection up to 10% earlier so that they do not close together |
+| `SetMaxOpenConns` | max(4, GOMAXPROCS), but always 5 below the account's connection limit, so that admins can still log in |
+| `SetMaxIdleConns` | no limit (`database/sql` keeps only 2, so under load it keeps opening and closing connections) |
+| `SetConnMaxIdleTime` | about a minute before the server's `wait_timeout` would close the connection; no limit if the server doesn't report it |
+| `SetConnMaxLifetime` | 30 minutes, minus a random 0–10% so that connections don't all close at once |
 
-When a connection comes back, its session is kept as it is: session
-variables, user variables and temporary tables pass to the next user, as in
-`database/sql`. The pool does not reset it, because a reset would also drop
-the connection's prepared statements. Instead, a returned connection is closed
-if it:
+**A returned connection keeps its session.** Session variables, user
+variables and temporary tables stay for the next user, as in `database/sql`.
+The pool doesn't reset the session, because that would also drop the
+connection's prepared statements. Instead it closes a returned connection
+that:
 
 - is broken;
-- has open `Rows`;
-- is in a transaction, including one started with `START TRANSACTION` as
-  text;
+- still has open `Rows`;
+- is inside a transaction (even one started with a plain
+  `START TRANSACTION` query);
 - was switched to another user or database;
-- is too old, or above the limits.
+- is too old, or more connections are open than the limit allows.
 
-A connection idle for more than a second is pinged when it is taken, and
-replaced if it is dead. Load balancers that drop idle TCP connections (Azure
-LB after 4 minutes, AWS NLB after 350 s) do not see the connection as idle:
-Go sends TCP keepalives every 15 s. Proxies with an idle timeout of their own
-(RDS Proxy: 30 minutes, TiDB Cloud: 340 s) need `SetConnMaxIdleTime` below it.
+**Dead connections.** A connection that sat idle for more than a second is
+pinged before it's handed out, and replaced if it doesn't answer. Load
+balancers that drop idle TCP connections (Azure after 4 minutes, AWS NLB after
+350 s) are not a problem: Go sends TCP keepalives every 15 s. Proxies with
+their own idle timeout (RDS Proxy: 30 minutes, TiDB Cloud: 340 s) are: set
+`SetConnMaxIdleTime` below their timeout.
 
 ## database/sql
 
@@ -124,16 +127,17 @@ Go sends TCP keepalives every 15 s. Proxies with an idle timeout of their own
 import _ "github.com/darxnet/gomysql/sqldriver"
 
 db, err := sql.Open("gomysql", "user:password@tcp(127.0.0.1:3306)/db?loc=Local")
-// or, with a full Config (TLS, InitCommands, keys):
+
+// or, for settings a DSN can't hold (TLS, InitCommands, keys):
 db := sql.OpenDB(sqldriver.NewConnector(config))
 ```
 
-The DSN has the format of go-sql-driver. These parameters have a `Config`
-field:
+The DSN uses the go-sql-driver format. These parameters are supported:
 
 - `tls` (`true`, `skip-verify` or `false`)
-- `collation`
+- `collation` and `charset`
 - `loc`
+- `timeout` (for connecting)
 - `compress`
 - `clientFoundRows`
 - `allowCleartextPasswords`
@@ -141,34 +145,33 @@ field:
 - `rejectReadOnly`
 - `connectionAttributes`
 
-`timeout` limits connecting, and `charset` without `collation` runs
-`SET NAMES`.
+Other go-sql-driver parameters, such as `parseTime`, `multiStatements` or
+`readTimeout`, are an error that says why. This way a DSN never silently asks
+for something gomysql doesn't do.
 
-The other parameters of go-sql-driver are refused, with the reason, so that a
-DSN does not silently ask for something gomysql does not do. Examples are
-`parseTime`, `multiStatements`, `readTimeout` and `interpolateParams`. Any
-other parameter sets a session variable when connecting:
-`time_zone=%27%2B00:00%27` runs `SET time_zone='+00:00'`. Its value is SQL, so
-it must never come from users. A `/` in a value or in the database name is
-escaped as `%2F`.
+Any other parameter sets a session variable on connect:
+`time_zone=%27%2B00:00%27` runs `SET time_zone='+00:00'`. The value is
+inserted into SQL as is, so never build it from user input. Write a `/` in a
+value or in the database name as `%2F`.
 
-The connections behave as `Conn` does:
+The driver works like `Conn`:
 
-- **Arguments** are interpolated into the text of the query.
-- **`Prepare`** makes a real prepared statement.
-- **Values** come typed: integers, floats, `time.Time` and `BIT` as numbers.
-  Text, JSON, binary strings, `DECIMAL` and `TIME` come as `[]byte` pointing
-  into the row: `sql.RawBytes` gets them without a copy, `string` and `[]byte`
-  with one, and `any` with `[]byte`.
-- **Retries:** `database/sql` retries a statement on `driver.ErrBadConn`. The
-  driver returns it only when nothing ran: for a connection broken before the
-  statement, and, with `rejectReadOnly`, for a statement a read-only server
-  refused.
-- **Stored procedures:** `rows.NextResultSet()` reads the next result set of a
+- **Arguments** are inserted into the query text on the client (see
+  [Arguments](#arguments)).
+- **`Prepare`** creates a real prepared statement on the server.
+- **Values** come as numbers (`int64`, `uint64`, `float32`, `float64`) and
+  `time.Time` for dates. Text, JSON, `DECIMAL`, `TIME` and binary strings come
+  as bytes: `sql.RawBytes` gets them without copying, `string` and `[]byte`
+  with one copy.
+- **Retries.** `database/sql` retries a statement when the driver returns
+  `driver.ErrBadConn`. gomysql returns it only when it's sure the statement
+  didn't run: the connection was already broken, or (with `rejectReadOnly`) a
+  read-only server refused the statement.
+- **Stored procedures.** `rows.NextResultSet()` moves to the next result of a
   `CALL`.
 
-`sqldriver.Raw` gives the `*gomysql.Conn` under a `*sql.Conn`, for `LoadData`,
-`ScanStruct` and the rest of the native API:
+`sqldriver.Raw` gives you the `*gomysql.Conn` behind a `*sql.Conn`, to use
+`LoadData`, `ScanStruct` and the rest of the native API:
 
 ```go
 err := sqldriver.Raw(sqlConn, func(conn *gomysql.Conn) error {
@@ -177,83 +180,102 @@ err := sqldriver.Raw(sqlConn, func(conn *gomysql.Conn) error {
 })
 ```
 
-On Go 1.27 and later the driver implements `driver.RowsColumnScanner` and
-scans straight into your variables. This is about twice as fast as
-go-sql-driver, with no allocation per row for numbers and `sql.RawBytes` (see
-[Performance](#performance)).
+On Go 1.27 and later the driver scans straight into your variables
+(`driver.RowsColumnScanner`). That makes it about twice as fast as
+go-sql-driver, with no allocations per row for numbers and `sql.RawBytes`
+(see [Performance](#performance)).
 
 ## Arguments
 
-`Query`, `Exec` and `QueryRow` replace the placeholders with the arguments on
-the client and send one statement: one round trip, no prepared statement.
+`Query`, `Exec` and `QueryRow` put the arguments into the query text on the
+client and send it as one statement: one round trip, no prepared statement.
 
-- **Placeholders** are `?` for positional arguments or `:name` for named ones,
-  not both in one query. Named arguments come from `sql.Named`, from one struct
-  (fields found as by `ScanStruct`, so `:user_id` finds `UserID`), or from one
-  `map[string]any`.
-- **What is not a placeholder:**
-  - a `?` or `:name` in a string, a quoted identifier or a comment, as the
-    server sees it;
-  - a `:` after an identifier or another `:`, as in `lbl:LOOP` or `@a:=1`.
-    So `id:id` is text, and the server reports the error.
-- **Versioned comments:** inside `/*!80000 … */`, `?` and `:name` are always
-  placeholders, even when the server ignores the comment for its version.
-- **Without arguments** the query is sent as it is.
-- **Slices** other than `[]byte` become lists: `IN (?)` with `[]int{1, 2}` is
-  `IN (1, 2)`. An empty slice is an error. Slices work only in `Query` and
-  `Exec`, not in prepared statements.
-- **Conversions** are those of `database/sql`:
-  - a `driver.Valuer` gives its value;
-  - a pointer gives what it points to (nil is NULL);
-  - a named type gives its basic type.
-  - Other types are an error, not a silent string.
-- **Literals:**
-  - strings are quoted and escaped;
-  - `[]byte` becomes `_binary'…'`;
-  - `bool` becomes 1 or 0;
-  - floats get their shortest exact form, and `float32` is not widened to
-    `float64` digits;
-  - NaN and infinities are an error;
-  - `time.Time` is written in `Config.Location` with up to 6 fractional
-    digits; the zero time is `'0000-00-00'`;
-  - `time.Duration` is its integer number of nanoseconds;
-  - `json.RawMessage` is a string.
-- **`NO_BACKSLASH_ESCAPES`** is followed as the server reports it, also after
-  `SET sql_mode`.
-- **Unsafe collations:** big5, cp932, gbk, gb18030 and sjis can hide a
-  backslash inside a multibyte character, so string arguments are refused
-  there. Use `Prepare`.
+```go
+conn.Query("SELECT * FROM users WHERE id = ?", 5)
+conn.Query("SELECT * FROM users WHERE id = :id", sql.Named("id", 5))
+conn.Query("SELECT * FROM users WHERE id IN (?)", []int{1, 2, 3})
+```
+
+**Placeholders**
+
+- Use `?` or `:name`, but not both in one query.
+- Named arguments come from `sql.Named`, from one struct (`:user_id` finds the
+  field `UserID`, as in [Structs](#structs)), or from one `map[string]any`.
+- A `?` or `:name` inside a string, a quoted name or a comment is just text.
+- A `:` right after a name or another `:` is text too, so `lbl:LOOP` and
+  `@a:=1` work. (This also means `id:id` is sent as is, and the server
+  reports the error.)
+- MySQL runs the text inside `/*!80000 … */` only on version 8.0.0 or newer.
+  The driver doesn't check the version, so a `?` inside is always a
+  placeholder.
+- A query without arguments is sent unchanged.
+
+**Slices** (except `[]byte`) become lists: `IN (?)` with `[]int{1, 2}` becomes
+`IN (1, 2)`. An empty slice is an error. Slices don't work in prepared
+statements.
+
+**Types** are converted as in `database/sql`. A `driver.Valuer` gives its
+value, a pointer gives what it points to (nil is `NULL`), and a named type
+such as `type ID int64` counts as its base type. Any other type is an error,
+never a silent `fmt.Sprint`.
+
+**How values are written**
+
+| Go value | In SQL |
+|---|---|
+| `string`, `json.RawMessage` | quoted and escaped string |
+| `[]byte` | `_binary'…'` |
+| `bool` | `1` or `0` |
+| floats | shortest exact form; a `float32` keeps its own digits (`0.1`, not `0.10000000149011612`); NaN and infinity are an error |
+| `time.Time` | in `Config.Location`, up to 6 decimal places; the zero time is `'0000-00-00'` |
+| `time.Duration` | number of nanoseconds: `5*time.Second` is `5000000000` |
+
+`time.Duration` is not a `TIME` value. Written into a `TIME` column, it is
+an error or a wrong value. Pass `TIME` values as strings: `"12:34:56"`.
+
+**Escaping safety**
+
+- If the server runs with `NO_BACKSLASH_ESCAPES`, strings are escaped to
+  match, also after a `SET sql_mode`.
+- With the character sets big5, cp932, gbk, gb18030 and sjis, a multibyte
+  character can hide a backslash, so escaping is not safe there. String
+  arguments are refused; use `Prepare` instead.
 
 ## Scanning values
 
-`Scan` converts as `database/sql` does: into strings, `[]byte`,
-`sql.RawBytes`, `any`, `bool`, integers, floats, `time.Time`, `time.Duration`,
-an `sql.Scanner` such as `sql.NullString`, a pointer to a pointer (nil for
-NULL), or a type based on one of these. Things that may surprise:
+`Scan` works like in `database/sql`. It fills strings, `[]byte`,
+`sql.RawBytes`, `any`, `bool`, integers, floats, `time.Time`, any
+`sql.Scanner` (such as `sql.NullString`), pointers to pointers (nil for
+`NULL`), and types based on these.
 
-- **NULL** goes only into `[]byte`, `sql.RawBytes`, `any`, a pointer to a
-  pointer and an `sql.Scanner`. Into anything else it is an error, as in
+What may surprise you:
+
+- **`NULL`** fits only into `[]byte`, `sql.RawBytes`, `any`, a pointer to a
+  pointer or an `sql.Scanner`. Anything else returns an error, as in
   `database/sql`.
-- **Range:** out-of-range numbers are an error. A value such as 300 does not
-  fit into an `int8`.
-- **Into `any` or an `sql.Scanner`** a value comes the same in both protocols:
-  - integers as `int64`, but `BIGINT UNSIGNED` and `BIT` as `uint64`;
-  - `FLOAT` as `float32`, `DOUBLE` as `float64`;
-  - dates as `time.Time`;
-  - JSON as `json.RawMessage` (MariaDB sends JSON as text, a `string`);
-  - text as `string`;
-  - binary strings, `DECIMAL` and `TIME` as `[]byte`.
-- **Dates:** `DATE`, `DATETIME` and `TIMESTAMP` are `time.Time` in
-  `Config.Location`, UTC by default. The zero date is the zero `time.Time`.
-  Scanned into a string they keep the server's format.
-- **`TIME`** goes only into a string or `[]byte` (`-12:34:56.5`), never into
-  `time.Duration`: a `time.Duration` argument is written as nanoseconds, so it
-  could not be written back. `time.Duration` gets integers, as nanoseconds.
-- **`BIT`** values up to 64 bits go into integers and `bool`.
-- **JSON** and text go into a pointer to a struct, map, array or slice through
+- **Numbers that don't fit** are an error: 300 won't go into an `int8`.
+- **`any` and `sql.Scanner`** get the same types in both protocols:
+
+  | Column | Go type |
+  |---|---|
+  | integers | `int64` (`BIGINT UNSIGNED` and `BIT`: `uint64`) |
+  | `FLOAT`, `DOUBLE` | `float32`, `float64` |
+  | dates | `time.Time` |
+  | JSON | `json.RawMessage` (MariaDB sends JSON as text, so `string`) |
+  | text | `string` |
+  | binary strings, `DECIMAL`, `TIME` | `[]byte` |
+
+- **Dates** (`DATE`, `DATETIME`, `TIMESTAMP`) become `time.Time` in
+  `Config.Location` (UTC by default). The zero date becomes the zero
+  `time.Time`. Scanned into a string, a date keeps the server's format.
+- **`TIME`** goes only into a string or `[]byte`, as `"-12:34:56.5"`, not
+  into `time.Duration` (see the note in [Arguments](#arguments)).
+  `time.Duration` accepts integers, as nanoseconds.
+- **`BIT`** (up to 64 bits) goes into integers and `bool`.
+- **JSON and text** go into a pointer to a struct, map, array or slice through
   `json.Unmarshal`.
-- **Copies:** `[]byte` gets a copy. `sql.RawBytes` points into the row and is
-  valid until the next `Next`, `Scan` or `Close`.
+- **Copies.** `[]byte` gets its own copy. `sql.RawBytes` points into the
+  driver's buffer and is valid only until the next `Next`, `Scan` or `Close`.
 
 ## Structs
 
@@ -267,100 +289,98 @@ type User struct {
 users, err := gomysql.Structs[User](conn.Query("SELECT id, name, created FROM users"))
 user, err := gomysql.Struct[User](conn.QueryRow("SELECT id, name, created FROM users WHERE id = ?", id))
 ids, err := gomysql.Values[uint64](conn.Query("SELECT id FROM users"))
-users, err = gomysql.AppendStructs(users[:0])(conn.Query(q)) // reuse a slice
+users, err = gomysql.AppendStructs(users[:0])(conn.Query(q)) // reuses the slice
 ```
 
-`AppendStructs(dst)(conn.Query(q))` looks unusual because Go does not allow
-`f(dst, conn.Query(q))`: a call with several results can only be the sole
-argument of another call.
+Why `AppendStructs(dst)(conn.Query(q))` and not
+`AppendStructs(dst, conn.Query(q))`? Go allows a call with two results only as
+the sole argument of another call.
 
-`rows.ScanStruct(&v)` scans the current row into a struct:
+`rows.ScanStruct(&v)` fills a struct from the current row:
 
-- **Matching columns to fields.** A column goes into the field of the same
-  name. The `db` tag wins; without it the field name is compared exactly, then
-  ignoring case, then ignoring underscores, so `user_id` goes into `UserID`.
-  `db:"-"` skips a field.
-- **Embedded structs:** their fields count as fields of the struct. A nil
-  pointer to an exported embedded struct is allocated. A nil pointer to an
-  unexported one is an error.
-- **Every column needs a field.** A column without one is an error. Fields
-  without a column keep their values, so one struct can serve several queries.
-- **Speed:** scanning into the same struct row after row costs as much as
-  `Scan`, because pointers to its fields are kept until `Close`.
-- **Custom scanning:** a type that implements `RowScanner` scans itself.
+- **Column → field.** The `db` tag wins. Without a tag, the column name is
+  matched to the field name exactly, then ignoring case, then ignoring
+  underscores: `user_id` goes into `UserID`. `db:"-"` skips a field.
+- **Embedded structs** count as part of the outer struct. A nil pointer to an
+  exported embedded struct is allocated; a nil pointer to an unexported one is
+  an error.
+- **Every column needs a field**, or it's an error. Fields without a column
+  are left alone, so one struct can serve several queries.
+- **Speed.** Scanning row after row into the same struct is as fast as
+  `Scan`.
+- **Your own logic.** A type that implements `RowScanner` scans itself.
 
 ## Prepared statements
 
-`Prepare` makes a server-side prepared statement, which uses the binary
-protocol. Each connection caches its statements:
+`Prepare` creates a prepared statement on the server. Each connection keeps
+its statements in a cache:
 
-- **Reuse.** `Prepare` of the same text returns the same `*Stmt` without
+- **Reuse.** Preparing the same text again returns the cached `*Stmt`, without
   asking the server.
-- **`Stmt.Close` does nothing.** The statement stays cached and shared.
-- **Cache size.** The cache holds max(64, `max_prepared_stmt_count` /
-  `max_connections`) statements and closes the least recently used beyond
-  that. If the server reports it holds too many statements of all connections
-  (error 1461), the cache closes half of its own and stays smaller.
-- **Re-preparing.** A statement that left the cache, was lost by `Reconnect`,
-  `ResetConnection` or `ChangeUser`, or is unknown to the server (error 1243,
-  as after an Aurora failover) is prepared again when executed.
-- **`UseDatabase`** closes the cached statements, because a statement keeps
-  the database it was prepared in. A `USE` statement sent as a query does not.
+- **`Stmt.Close` does nothing.** The statement stays in the cache.
+- **Size.** The cache holds max(64, `max_prepared_stmt_count` /
+  `max_connections`) statements and drops the least recently used. If the
+  server says it has too many statements in total (error 1461), the cache
+  drops half of its own and stays smaller.
+- **Automatic re-prepare.** If a statement was dropped from the cache, lost
+  in a reconnect, or the server no longer knows it (for example after an
+  Aurora failover), it is prepared again on the next use.
+- **`UseDatabase`** clears the cache, because a statement stays tied to the
+  database it was prepared in. A `USE db` query doesn't.
 
-**Parameter types on MySQL 8.** Since 8.0.22, MySQL keeps the type a parameter
-had in an earlier execution of a statement and converts later arguments to
-it. A string after an integer comes back as `0`. Anything after a `DATETIME`
-comes back as a zero date. A large integer after a `DOUBLE` is rounded. This
-is documented behaviour; Oracle advises one statement per set of types (bugs
-[#102942](https://bugs.mysql.com/bug.php?id=102942) and
+**MySQL 8 and parameter types.** Since 8.0.22, MySQL remembers the type of
+each parameter from the first run of a statement, and converts later
+arguments to it. Pass a string where an integer was before and you get `0`;
+anything after a `DATETIME` becomes a zero date; a large integer after a
+`DOUBLE` gets rounded. Oracle says this is by design and advises a separate
+statement for each set of types (bugs
+[#102942](https://bugs.mysql.com/bug.php?id=102942),
 [#113240](https://bugs.mysql.com/bug.php?id=113240)).
 
-gomysql follows that advice. It prepares the statement again when the class
-of an argument changes: integer, floating point, string or date (NULL keeps
-the class). Mixing types on one statement therefore works, at the cost of an
-extra round trip on each change. MariaDB and MySQL 5.7 do not keep the type
-and pay the same small cost.
+gomysql does that for you: when an argument changes its kind (integer,
+float, string or date; `NULL` doesn't count), the statement is prepared
+again. Mixing types works, at the cost of one extra round trip on each
+change.
 
 ## Errors, contexts and transactions
 
-- **`*gomysql.Error`** is an error of the server, with its number, SQLSTATE
-  and message. Compare the number with
-  `errors.Is(err, &gomysql.Error{Number: 1062})` or `errors.As`.
-- **`ErrBadConn`** matches every error that left the connection unusable, with
-  the cause wrapped: I/O errors, malformed packets, canceled contexts,
-  connection-level server errors (SQLSTATE class 08) and errors the server
-  sends before closing (4031 after `wait_timeout`). Only `Reconnect` and
-  `Close` work after it. The statement may or may not have run.
-- **`ErrBusy`** means the `Rows` of an earlier query are still open. Nothing
-  was sent.
-- **`sql.ErrConnDone`** is returned after `Close`.
-- **Contexts:** a context's deadline becomes the deadline of the socket.
-  Canceling it interrupts the statement and breaks the connection; no
-  `KILL QUERY` is sent, as in pgx.
-- **Transactions:** the context of `BeginTx` applies until `Commit` or
-  `Rollback`. When it is done the socket is closed, so the server rolls the
-  transaction back at once.
-- **`Config.RejectReadOnly`:** after a failover the old primary turns
+- **`*gomysql.Error`** is an error from the server, with its number, SQLSTATE
+  and message: `errors.Is(err, &gomysql.Error{Number: 1062})` checks for a
+  duplicate key.
+- **`ErrBadConn`** means the connection can't be used any more: a network
+  error, a broken packet, a canceled context, or a server error that closes
+  the connection. The cause is wrapped. Only `Reconnect` and `Close` work
+  after it. The statement may or may not have run.
+- **`ErrBusy`**: the `Rows` of an earlier query are still open. Nothing was
+  sent.
+- **`sql.ErrConnDone`**: the connection is closed.
+- **Contexts.** The context's deadline becomes the socket's deadline.
+  Canceling the context stops the statement and breaks the connection (no
+  `KILL QUERY` is sent, as in pgx).
+- **Transactions.** The context of `BeginTx` applies until `Commit` or
+  `Rollback`. When it ends, the socket is closed, so the server rolls the
+  transaction back right away.
+- **`Config.RejectReadOnly`.** After a failover the old primary becomes
   read-only. With this option, a statement it refuses breaks the connection,
-  and a new connection reaches the new primary. Through `database/sql` the
-  statement is retried there. A `CALL` refused in the middle may have run in
-  part.
-- **No automatic retries.** gomysql never retries a statement that was sent.
+  so the next connection goes to the new primary, and `database/sql` retries
+  the statement there. Careful with `CALL`: a procedure may have run in part
+  before it was refused.
+- **No automatic retries.** gomysql never resends a statement that was
+  already sent.
 
 ## Sessions
 
 - **`Config.InitCommands`** run after connecting, `Reconnect`,
-  `ResetConnection` and `ChangeUser`. If one fails, the connection fails.
-- **`ResetConnection`** (`COM_RESET_CONNECTION`) resets the session without
-  reconnecting. Afterwards it sets the collation of `Config` again, because
-  MySQL resets the connection's character set to the server's (`latin1` on
-  5.7).
-- **`ChangeUser`** authenticates as another user on the same connection.
-- **`Config.Collation`** is set in the handshake, which allows only collation
-  ids below 256. A server that does not know the collation falls back to its
-  default without an error.
-- **Stored procedures:** `Rows.NextResultSet` moves to the next `SELECT` of a
-  `CALL`. Multi-statement queries (`a; b`) are not supported.
+  `ResetConnection` and `ChangeUser`. If one fails, so does the connection.
+- **`ResetConnection`** resets the session without reconnecting, then sets
+  the `Config` collation again (MySQL resets it to the server's default,
+  `latin1` on 5.7).
+- **`ChangeUser`** logs in as another user on the same connection.
+- **`Config.Collation`** is sent during the handshake, which only allows ids
+  below 256. A server that doesn't know the collation silently uses its
+  default.
+- **Stored procedures.** `Rows.NextResultSet` moves to the next `SELECT` of a
+  `CALL`. Several statements in one query (`a; b`) are not supported.
 
 ## LOAD DATA
 
@@ -368,37 +388,38 @@ and pay the same small cost.
 res, err := conn.LoadData("LOAD DATA LOCAL INFILE 'rows.csv' INTO TABLE t FIELDS TERMINATED BY ','", reader)
 ```
 
-- **Source:** the file is read from the `io.Reader`; its name in the statement
-  does not matter. Nothing is read from the disk, and a server that asks for a
-  file outside `LoadData` gets an empty one.
-- **Server setting:** the server must allow it with `local_infile=ON`, which
-  is off by default since MySQL 8.0.
-- **Errors:** if the reader fails, the connection is closed so that the server
-  aborts the statement. An InnoDB table then gets none of the rows.
+- The data comes from `reader`; the file name in the query doesn't matter.
+  Nothing is read from disk. If the server asks for a file outside `LoadData`,
+  it gets an empty one.
+- The server must have `local_infile=ON` (off by default since MySQL 8.0).
+- If `reader` returns an error, the connection is closed so the server
+  aborts the load. An InnoDB table then gets none of the rows.
 
 ## Authentication and TLS
 
-- **Plugins:** `caching_sha2_password` (the default since MySQL 8.0),
-  `mysql_native_password`, `sha256_password` and `mysql_clear_password` are
-  supported. More can be added with `Config.AuthPlugins`.
-- **Old passwords:** `mysql_old_password` is refused. Its hash is broken, and
-  a server or a man in the middle could ask for it to get the password.
-- **Full authentication without TLS.** After a server restart or
-  `FLUSH PRIVILEGES`, `caching_sha2_password` needs a full authentication:
-  - with TLS or a unix socket, no key is needed;
-  - without TLS it needs the server's RSA key: either `Config.ServerPublicKey`,
-    or `Config.AllowPublicKeyRetrieval`, which asks the server for it. A man
-    in the middle can then send his own key and read the password.
-- **TLS** is set with `Config.TLS`. It is required once set; there is no
-  fallback to plain text. Without a `ServerName` the host of `Address` is
+- **Supported:** `caching_sha2_password` (the default since MySQL 8.0),
+  `mysql_native_password`, `sha256_password` and `mysql_clear_password`.
+  Add your own with `Config.AuthPlugins`.
+- **`mysql_old_password` is refused.** Its hash is broken, and a fake server
+  could ask for it to steal the password.
+- **`caching_sha2_password` without TLS.** After a server restart or
+  `FLUSH PRIVILEGES`, the server asks for the full password once:
+  - over TLS or a unix socket, nothing else is needed;
+  - otherwise the password is encrypted with the server's RSA key. Give the
+    key in `Config.ServerPublicKey`, or set `Config.AllowPublicKeyRetrieval`
+    to fetch it from the server. The second is easier but unsafe: a man in
+    the middle can send his own key and read the password.
+- **TLS** is turned on with `Config.TLS`, and then it's required: there's no
+  fallback to plain text. Without a `ServerName`, the host from `Address` is
   verified. `InsecureSkipVerify` exposes the password to a man in the middle.
-- **Clear text:** `mysql_clear_password` (PAM, LDAP) sends the password only
-  over TLS or a unix socket, unless `Config.AllowCleartextPasswords` is set.
+- **Clear-text passwords** (`mysql_clear_password`, for PAM or LDAP) are sent
+  only over TLS or a unix socket, unless you set
+  `Config.AllowCleartextPasswords`.
 
 ## Performance
 
-Scanning 1M rows on MySQL 8.4, CPU per row on an Apple M3 Pro. The column
-names are what the benchmarks scan.
+CPU time per row, reading 1M rows from MySQL 8.4 on an Apple M3 Pro. Rows
+show what the columns are scanned into.
 
 | | gomysql | sqldriver (Go 1.27) | go-sql-driver, text | go-sql-driver, prepared |
 |---|---|---|---|---|
@@ -413,23 +434,28 @@ Allocations for the same 1M rows:
 | integers | 1 for the whole query | 14 | 2.3M |
 | strings | one per string | one per string | 5M |
 
-A point query with an argument allocates 528 bytes in 7 allocations through
-gomysql. Through `sqldriver` it takes 782 bytes in 14, against 864 bytes in
-23 for go-sql-driver. Benchmarks against go-sql-driver live in the `bench`
-module.
+A query for a single row by id:
+
+| | gomysql | sqldriver | go-sql-driver |
+|---|---|---|---|
+| memory | 528 B | 782 B | 864 B |
+| allocations | 7 | 14 | 23 |
+
+The comparison benchmarks are in the `bench` module.
 
 ## Compatibility
 
-- **Servers:** MySQL 5.7, 8.0, 8.4 and 9.x, Percona Server 5.7 and 8.4, and
-  MariaDB 10.6 and 11.4. Every change is tested against all of them.
-- **Go:** 1.24 and later. On Go 1.27 the `database/sql` driver scans directly
-  through `driver.RowsColumnScanner`.
+- **Servers:** MySQL 5.7, 8.0, 8.4 and 9.x, Percona Server 5.7 and 8.4,
+  MariaDB 10.6 and 11.4. Every change is tested on all of them.
+- **Go:** `go.mod` requires 1.24; tested on the two latest Go releases.
 - **Not supported:**
-  - multi-statement queries;
-  - cursors (`COM_STMT_FETCH`);
-  - long data (`COM_STMT_SEND_LONG_DATA`);
-  - the replication protocol;
-  - a check of idle connections with `MSG_PEEK` (the pool pings instead).
+  - several statements in one query (`a; b`);
+  - server-side cursors (`COM_STMT_FETCH`): rows are already streamed, so
+    they would only add round trips;
+  - sending one argument in chunks (`COM_STMT_SEND_LONG_DATA`); use
+    `LOAD DATA` for large data;
+  - the replication protocol (see go-mysql-org/go-mysql);
+  - checking idle connections with `MSG_PEEK`; the pool pings instead.
 
 ## License
 
