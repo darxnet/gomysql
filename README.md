@@ -246,7 +246,9 @@ NULL), or a type based on one of these. Things that may surprise:
 - **Dates:** `DATE`, `DATETIME` and `TIMESTAMP` are `time.Time` in
   `Config.Location`, UTC by default. The zero date is the zero `time.Time`.
   Scanned into a string they keep the server's format.
-- **`TIME`** goes into `time.Duration`. Integers do too, as nanoseconds.
+- **`TIME`** goes only into a string or `[]byte` (`-12:34:56.5`), never into
+  `time.Duration`: a `time.Duration` argument is written as nanoseconds, so it
+  could not be written back. `time.Duration` gets integers, as nanoseconds.
 - **`BIT`** values up to 64 bits go into integers and `bool`.
 - **JSON** and text go into a pointer to a struct, map, array or slice through
   `json.Unmarshal`.

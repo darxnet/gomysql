@@ -494,18 +494,5 @@ func (rs *rows) ColumnTypePrecisionScale(i int) (precision, scale int64, ok bool
 	return rs.colType(i).DecimalSize()
 }
 
-// ColumnTypeScanType is that of gomysql, but string for TIME: it comes
-// as bytes ("12:34:56"), which database/sql cannot convert to the
-// time.Duration of gomysql.
-func (rs *rows) ColumnTypeScanType(i int) reflect.Type {
-	ct := rs.colType(i)
-	if ct.DatabaseTypeName() != "TIME" {
-		return ct.ScanType()
-	}
-
-	if nullable, _ := ct.Nullable(); nullable {
-		return reflect.TypeFor[sql.NullString]()
-	}
-
-	return reflect.TypeFor[string]()
-}
+// ColumnTypeScanType is that of gomysql.
+func (rs *rows) ColumnTypeScanType(i int) reflect.Type { return rs.colType(i).ScanType() }

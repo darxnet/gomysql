@@ -167,7 +167,7 @@ func (ct *ColumnType) Nullable() (nullable, ok bool) {
 
 // ScanType returns a type that Scan fills without loss: an integer type of
 // the size of the column, float32, float64, string for text and DECIMAL,
-// []byte for binary strings, time.Time, time.Duration for TIME, uint64 for
+// []byte for binary strings, time.Time, string for TIME, uint64 for
 // BIT. Columns that can be NULL get sql.Null of the type, but []byte,
 // where nil is NULL.
 func (ct *ColumnType) ScanType() reflect.Type {
@@ -191,10 +191,8 @@ func (ct *ColumnType) ScanType() reflect.Type {
 		t = reflect.TypeFor[float32]()
 	case myTypeDouble:
 		t = reflect.TypeFor[float64]()
-	case myTypeDecimal, myTypeNewDecimal:
+	case myTypeDecimal, myTypeNewDecimal, myTypeTime, myTypeTime2:
 		t = reflect.TypeFor[string]()
-	case myTypeTime, myTypeTime2:
-		t = reflect.TypeFor[time.Duration]()
 	case myTypeBit:
 		t = reflect.TypeFor[uint64]()
 	case myTypeNull:
@@ -227,17 +225,16 @@ func pick[S, U any](unsigned bool) reflect.Type {
 
 // nullTypes maps the types of ScanType to their sql.Null.
 var nullTypes = map[reflect.Type]reflect.Type{
-	reflect.TypeFor[int8]():          reflect.TypeFor[sql.Null[int8]](),
-	reflect.TypeFor[uint8]():         reflect.TypeFor[sql.Null[uint8]](),
-	reflect.TypeFor[int16]():         reflect.TypeFor[sql.Null[int16]](),
-	reflect.TypeFor[uint16]():        reflect.TypeFor[sql.Null[uint16]](),
-	reflect.TypeFor[int32]():         reflect.TypeFor[sql.Null[int32]](),
-	reflect.TypeFor[uint32]():        reflect.TypeFor[sql.Null[uint32]](),
-	reflect.TypeFor[int64]():         reflect.TypeFor[sql.Null[int64]](),
-	reflect.TypeFor[uint64]():        reflect.TypeFor[sql.Null[uint64]](),
-	reflect.TypeFor[float32]():       reflect.TypeFor[sql.Null[float32]](),
-	reflect.TypeFor[float64]():       reflect.TypeFor[sql.Null[float64]](),
-	reflect.TypeFor[string]():        reflect.TypeFor[sql.Null[string]](),
-	reflect.TypeFor[time.Time]():     reflect.TypeFor[sql.Null[time.Time]](),
-	reflect.TypeFor[time.Duration](): reflect.TypeFor[sql.Null[time.Duration]](),
+	reflect.TypeFor[int8]():      reflect.TypeFor[sql.Null[int8]](),
+	reflect.TypeFor[uint8]():     reflect.TypeFor[sql.Null[uint8]](),
+	reflect.TypeFor[int16]():     reflect.TypeFor[sql.Null[int16]](),
+	reflect.TypeFor[uint16]():    reflect.TypeFor[sql.Null[uint16]](),
+	reflect.TypeFor[int32]():     reflect.TypeFor[sql.Null[int32]](),
+	reflect.TypeFor[uint32]():    reflect.TypeFor[sql.Null[uint32]](),
+	reflect.TypeFor[int64]():     reflect.TypeFor[sql.Null[int64]](),
+	reflect.TypeFor[uint64]():    reflect.TypeFor[sql.Null[uint64]](),
+	reflect.TypeFor[float32]():   reflect.TypeFor[sql.Null[float32]](),
+	reflect.TypeFor[float64]():   reflect.TypeFor[sql.Null[float64]](),
+	reflect.TypeFor[string]():    reflect.TypeFor[sql.Null[string]](),
+	reflect.TypeFor[time.Time](): reflect.TypeFor[sql.Null[time.Time]](),
 }
