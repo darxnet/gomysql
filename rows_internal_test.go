@@ -67,7 +67,7 @@ func textRows(c *columnDefinition, values ...[]byte) *Rows {
 		if v == nil {
 			rows.buf = append(rows.buf, 0xfb)
 		} else {
-			rows.buf = appendLenEncBytes(rows.buf, v)
+			rows.buf = appendLenEncString(rows.buf, v)
 		}
 	}
 

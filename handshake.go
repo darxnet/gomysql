@@ -203,7 +203,7 @@ func (conn *Conn) upgradeTLS(sslRequest []byte) error {
 // (CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA).
 func appendAuthResponse(dst, authResponse []byte) []byte {
 	if len(authResponse) > 255 {
-		return appendLenEncBytes(dst, authResponse)
+		return appendLenEncString(dst, authResponse)
 	}
 
 	dst = append(dst, byte(len(authResponse))) //nolint:gosec // G115: at most 255

@@ -39,7 +39,7 @@ func TestLargeResponse(t *testing.T) {
 				c.seq = 1
 				out := c.frame(nil, []byte{1})
 				out = c.frame(out, fakeColumn{"v", myTypeBlob, 0}.definition())
-				out = c.frame(out, appendLenEncBytes(nil, value))
+				out = c.frame(out, appendLenEncString(nil, value))
 				out = c.eof(out, true)
 
 				_, err := c.conn.Write(out)
