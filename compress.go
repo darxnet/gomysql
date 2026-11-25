@@ -3,7 +3,6 @@ package gomysql
 import (
 	"bytes"
 	"compress/zlib"
-	"encoding/binary"
 	"errors"
 	"io"
 )
@@ -213,8 +212,5 @@ func (c *compressedReader) inflate(payload []byte, plainLen int) error {
 
 // putUint24 writes n as a 3-byte little-endian integer into b[:3].
 func putUint24(b []byte, n int) {
-	var tmp [4]byte
-
-	binary.LittleEndian.PutUint32(tmp[:], uint32(n)) //nolint:gosec // G115: packet sizes are below 1<<24
-	copy(b[:3], tmp[:3])
+	b[0], b[1], b[2] = byte(n), byte(n>>8), byte(n>>16) //nolint:gosec // G115: packet sizes are below 1<<24
 }
