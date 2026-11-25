@@ -236,18 +236,22 @@ func writePackets[T string | []byte](conn *Conn, com []byte, arg T) error {
 		conn.wbuf = b[:0]
 	}
 
-	var err error
-	if conn.compress != nil {
-		err = conn.writeCompressed(b)
-	} else {
-		_, err = conn.conn.Write(b)
-	}
-
-	if err != nil {
+	if err := conn.write(b); err != nil {
 		return conn.errorAfterWrite(err)
 	}
 
 	return nil
+}
+
+// write sends b, whole packets, compressed if the protocol is.
+func (conn *Conn) write(b []byte) error {
+	if conn.compress != nil {
+		return conn.writeCompressed(b)
+	}
+
+	_, err := conn.conn.Write(b)
+
+	return err
 }
 
 // errorAfterWriteWait is how long errorAfterWrite waits for the error. The

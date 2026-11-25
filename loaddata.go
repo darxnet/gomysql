@@ -116,11 +116,5 @@ func (conn *Conn) writeRaw(p []byte) error {
 	p[3] = conn.sequence
 	conn.sequence++
 
-	if conn.compress != nil {
-		return conn.writeCompressed(p)
-	}
-
-	_, err := conn.conn.Write(p)
-
-	return err
+	return conn.write(p)
 }
