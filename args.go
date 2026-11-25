@@ -22,26 +22,25 @@ var valuerType = reflect.TypeFor[driver.Valuer]()
 // points to (nil is NULL), and a type based on a basic type is converted
 // to it. json.RawMessage is a string.
 func convertArg(arg any) (any, error) {
-	switch b := arg.(type) {
+	switch v := arg.(type) {
+	case nil, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64,
+		float32, float64, bool, string, time.Time:
+		return arg, nil
 	case []byte:
-		if b == nil {
+		if v == nil {
 			return nil, nil //nolint:nilnil // NULL
 		}
+
+		return arg, nil
 	case json.RawMessage:
 		// Text: MySQL refuses JSON from a binary string.
-		if b == nil {
+		if v == nil {
 			return nil, nil //nolint:nilnil // NULL
 		}
 
-		return string(b), nil
-	}
-
-	switch v := arg.(type) {
+		return string(v), nil
 	case sql.NamedArg:
 		return nil, fmt.Errorf("gomysql: sql.Named %q among positional arguments", v.Name)
-	case nil, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64,
-		float32, float64, bool, string, []byte, time.Time:
-		return arg, nil
 	}
 
 	rv := reflect.ValueOf(arg)
@@ -91,7 +90,7 @@ func convertArg(arg any) (any, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("gomysql: unsupported argument type %T", arg)
+	return nil, unsupportedArg(arg)
 }
 
 func errArgCount(placeholders, args int) error {
@@ -384,7 +383,7 @@ func (e *escaper) appendLiteral(buf []byte, arg any) ([]byte, error) {
 		return appendTimeLiteral(buf, inLocation(v, e.loc)), nil
 	}
 
-	return buf, fmt.Errorf("gomysql: unsupported argument type %T", arg)
+	return buf, unsupportedArg(arg)
 }
 
 func appendFloat(buf []byte, f float64, bits int) ([]byte, error) {
@@ -398,39 +397,43 @@ func appendFloat(buf []byte, f float64, bits int) ([]byte, error) {
 // appendQuoted appends s quoted, escaping what the server would read as
 // the end of the string or as an escape.
 func appendQuoted[T string | []byte](buf []byte, s T, noBackslash bool) []byte {
+	escapes, escape := &backslashEscapes, byte('\\')
+	if noBackslash {
+		escapes, escape = &quoteEscapes, '\''
+	}
+
 	buf = append(buf, '\'')
 
-	for i := range len(s) {
-		c := s[i]
+	// The bytes between escapes are copied as runs.
+	start := 0
 
-		if noBackslash {
-			if c == '\'' {
-				buf = append(buf, '\'')
+	for i := range len(s) {
+		if c := escapes[s[i]]; c != 0 {
+			switch i - start {
+			case 0:
+			case 1: // a byte is cheaper to append than a slice
+				buf = append(buf, s[start])
+			default:
+				buf = append(buf, s[start:i]...)
 			}
 
-			buf = append(buf, c)
-
-			continue
-		}
-
-		switch c {
-		case 0:
-			buf = append(buf, '\\', '0')
-		case '\n':
-			buf = append(buf, '\\', 'n')
-		case '\r':
-			buf = append(buf, '\\', 'r')
-		case 0x1a:
-			buf = append(buf, '\\', 'Z')
-		case '\'', '"', '\\':
-			buf = append(buf, '\\', c)
-		default:
-			buf = append(buf, c)
+			buf = append(buf, escape, c)
+			start = i + 1
 		}
 	}
 
+	buf = append(buf, s[start:]...)
+
 	return append(buf, '\'')
 }
+
+// backslashEscapes are the bytes escaped with a backslash, and what
+// follows it; quoteEscapes those of NO_BACKSLASH_ESCAPES, where a quote is
+// doubled.
+var (
+	backslashEscapes = [256]byte{0: '0', '\n': 'n', '\r': 'r', 0x1a: 'Z', '\'': '\'', '"': '"', '\\': '\\'}
+	quoteEscapes     = [256]byte{'\'': '\''}
+)
 
 // appendTimeLiteral appends t's wall clock as 'YYYY-MM-DD HH:MM:SS' with
 // microseconds if any; the zero time is the zero date.

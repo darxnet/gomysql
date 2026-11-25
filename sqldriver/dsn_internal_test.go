@@ -53,6 +53,27 @@ func TestParseDSNAddress(t *testing.T) {
 	}
 }
 
+// The booleans of strconv.ParseBool, and skip-verify in any case.
+func TestParseDSNBooleans(t *testing.T) {
+	t.Parallel()
+
+	config, _, err := parseDSN("/db?compress=t&clientFoundRows=TRUE&rejectReadOnly=F&tls=T")
+	if err != nil || !config.Compress || !config.FoundRows || config.RejectReadOnly ||
+		config.TLS == nil || config.TLS.InsecureSkipVerify {
+		t.Errorf("%+v, %v", config, err)
+	}
+
+	config, _, err = parseDSN("/db?tls=SKIP-VERIFY")
+	if err != nil || config.TLS == nil || !config.TLS.InsecureSkipVerify {
+		t.Errorf("SKIP-VERIFY: %+v, %v", config.TLS, err)
+	}
+
+	config, _, err = parseDSN("/db?tls=0")
+	if err != nil || config.TLS != nil {
+		t.Errorf("tls=0: %+v, %v", config.TLS, err)
+	}
+}
+
 func TestParseDSNErrors(t *testing.T) {
 	t.Parallel()
 
@@ -66,6 +87,8 @@ func TestParseDSNErrors(t *testing.T) {
 		"/db?tls=preferred",
 		"/db?tls=custom",
 		"/db?compress=maybe",
+		"/db?compress=yes",
+		"/db?tls=tRuE",
 		"/db?timeout=soon",
 		"/db?loc=Nowhere%2FCity",
 		"/db?connectionAttributes=novalue",

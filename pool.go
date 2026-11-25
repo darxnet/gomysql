@@ -247,10 +247,7 @@ func (db *DB) connect(ctx context.Context) (*Conn, error) {
 	}
 
 	if err != nil {
-		db.mu.Lock()
-		db.open--
-		db.wakeLocked()
-		db.mu.Unlock()
+		db.release()
 
 		return nil, err
 	}
@@ -322,6 +319,14 @@ func (db *DB) cancelWait(wait chan struct{}) {
 	db.wakeLocked()
 }
 
+// release frees the place of a connection that left the pool.
+func (db *DB) release() {
+	db.mu.Lock()
+	db.open--
+	db.wakeLocked()
+	db.mu.Unlock()
+}
+
 // wakeLocked wakes the longest waiter: an idle connection or a place for
 // a new one is free.
 func (db *DB) wakeLocked() {
@@ -390,10 +395,7 @@ func (db *DB) discard(conn *Conn) {
 	conn.pool = nil
 	_ = conn.Close()
 
-	db.mu.Lock()
-	db.open--
-	db.wakeLocked()
-	db.mu.Unlock()
+	db.release()
 }
 
 // Hijack takes the connection out of its pool: its place is freed, and
@@ -406,10 +408,7 @@ func (conn *Conn) Hijack() {
 
 	conn.pool = nil
 
-	db.mu.Lock()
-	db.open--
-	db.wakeLocked()
-	db.mu.Unlock()
+	db.release()
 }
 
 // Close closes the idle connections and makes Conn fail; connections in

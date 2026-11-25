@@ -112,15 +112,9 @@ func (conn *Conn) sendFile() error {
 // the next packet; it is written without a copy.
 func (conn *Conn) writeRaw(p []byte) error {
 	n := len(p) - headerSize
-	p[0], p[1], p[2] = byte(n), byte(n>>8), byte(n>>16) //nolint:gosec // G115: n < 1<<24
+	putUint24(p, n)
 	p[3] = conn.sequence
 	conn.sequence++
 
-	if conn.compress != nil {
-		return conn.writeCompressed(p)
-	}
-
-	_, err := conn.conn.Write(p)
-
-	return err
+	return conn.write(p)
 }

@@ -192,14 +192,8 @@ func (conn *Conn) readResultHeader() (columns int, err error) {
 // skipResult reads the rest of a result whose header said columns, and
 // the results that follow it.
 func (conn *Conn) skipResult(columns int) error {
-	if columns > 0 {
-		if err := conn.skipColumns(columns); err != nil {
-			return err
-		}
-
-		if err := conn.readUntilEOF(); err != nil {
-			return err
-		}
+	if err := conn.skipResultSet(columns); err != nil {
+		return err
 	}
 
 	return conn.readMoreResults()
@@ -213,18 +207,26 @@ func (conn *Conn) readMoreResults() error {
 			return err
 		}
 
-		if n > 0 {
-			if err := conn.skipColumns(n); err != nil {
-				return err
-			}
-
-			if err := conn.readUntilEOF(); err != nil {
-				return err
-			}
+		if err := conn.skipResultSet(n); err != nil {
+			return err
 		}
 	}
 
 	return nil
+}
+
+// skipResultSet reads the column definitions and rows of a result set
+// whose header said columns; nothing for 0, an OK packet.
+func (conn *Conn) skipResultSet(columns int) error {
+	if columns == 0 {
+		return nil
+	}
+
+	if err := conn.skipColumns(columns); err != nil {
+		return err
+	}
+
+	return conn.readUntilEOF()
 }
 
 // columnCount reads the column count that starts a result set.

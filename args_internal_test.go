@@ -198,3 +198,33 @@ func interpolateString(conn *Conn, query string, args []any) (string, error) {
 
 	return string(buf), err
 }
+
+// BenchmarkAppendQuoted quotes strings in both escaping modes: without
+// escapes, with a few, and with an escape every byte or two.
+func BenchmarkAppendQuoted(b *testing.B) {
+	inputs := []struct{ name, s string }{
+		{"short", "user@example.com"},
+		{"100", strings.Repeat("abcdefghij", 10)},
+		{"1k-few", strings.Repeat("it's a line of text with \"quotes\"\n", 30)},
+		{"escapes", strings.Repeat("'\\", 50)},
+	}
+
+	buf := make([]byte, 0, 4096)
+
+	for _, noBackslash := range []bool{false, true} {
+		for _, in := range inputs {
+			name := in.name
+			if noBackslash {
+				name = "noBackslash/" + name
+			}
+
+			b.Run(name, func(b *testing.B) {
+				b.SetBytes(int64(len(in.s)))
+
+				for b.Loop() {
+					buf = appendQuoted(buf[:0], in.s, noBackslash)
+				}
+			})
+		}
+	}
+}

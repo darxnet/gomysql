@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha1" //nolint:gosec // G505: mysql_native_password and RSA-OAEP of MySQL are defined with SHA-1
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -86,11 +87,10 @@ func (conn *Conn) plugin(name string) AuthPlugin {
 	return builtinPlugins[name]
 }
 
-// authenticate sends the handshake response with the answer of the
-// server's plugin to its nonce, and runs the exchange until the server
-// accepts or refuses. A plugin gomysql does not know is answered with
-// mysql_native_password, which the server switches from.
-func (conn *Conn) authenticate(name string, nonce []byte) error {
+// newAuth starts an authentication with the server's plugin and nonce:
+// its Auth, and the plugin, mysql_native_password for one gomysql does not
+// know, which the server switches from.
+func (conn *Conn) newAuth(name string, nonce []byte) (*Auth, AuthPlugin) {
 	a := &Auth{
 		User:     conn.config.User,
 		Password: conn.config.Password,
@@ -103,6 +103,15 @@ func (conn *Conn) authenticate(name string, nonce []byte) error {
 	if plugin == nil {
 		plugin = builtinPlugins[pluginNative]
 	}
+
+	return a, plugin
+}
+
+// authenticate sends the handshake response with the answer of the
+// server's plugin to its nonce, and runs the exchange until the server
+// accepts or refuses.
+func (conn *Conn) authenticate(name string, nonce []byte) error {
+	a, plugin := conn.newAuth(name, nonce)
 
 	response, err := plugin.Respond(a, nonce)
 	if err != nil {
@@ -253,9 +262,7 @@ func (nativePassword) Respond(a *Auth, data []byte) ([]byte, error) {
 	h.Write(hash2[:])
 
 	response := h.Sum(nil)
-	for i := range response {
-		response[i] ^= hash[i]
-	}
+	subtle.XORBytes(response, response, hash[:])
 
 	return response, nil
 }
@@ -324,9 +331,7 @@ func scrambleSHA256(password string, nonce []byte) []byte {
 	h.Write(nonce)
 
 	response := h.Sum(nil)
-	for i := range response {
-		response[i] ^= hash[i]
-	}
+	subtle.XORBytes(response, response, hash[:])
 
 	return response
 }

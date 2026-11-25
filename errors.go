@@ -75,6 +75,6 @@ func badSequence(expected, received byte) error {
 	return outOfSync(fmt.Sprintf("sequence id %d, expected %d", received, expected))
 }
 
-func unsupportedArg(argType string) error {
-	return errors.New("gomysql: unsupported argument type " + argType)
+func unsupportedArg(arg any) error {
+	return fmt.Errorf("gomysql: unsupported argument type %T", arg)
 }

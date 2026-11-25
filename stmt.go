@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"reflect"
 	"time"
 )
 
@@ -464,7 +463,7 @@ func appendParam(values []byte, arg any, loc *time.Location) (typ [2]byte, newVa
 		// MYSQL_TYPE_STRING parameter of a statement reprepared after its
 		// table was recreated in the character set of the old column,
 		// truncating binary data at the first invalid byte.
-		return [2]byte{myTypeBlob, 0}, appendLenEncBytes(values, v), nil
+		return [2]byte{myTypeBlob, 0}, appendLenEncString(values, v), nil
 	case time.Time:
 		return [2]byte{myTypeDatetime, 0}, appendDatetime(values, inLocation(v, loc)), nil
 	case bool:
@@ -499,7 +498,7 @@ func appendParam(values []byte, arg any, loc *time.Location) (typ [2]byte, newVa
 	case float64:
 		return [2]byte{myTypeDouble, 0}, le.AppendUint64(values, math.Float64bits(v)), nil
 	default:
-		return [2]byte{}, values, unsupportedArg(reflect.TypeOf(v).Name())
+		return [2]byte{}, values, unsupportedArg(arg)
 	}
 }
 

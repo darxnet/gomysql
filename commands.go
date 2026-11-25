@@ -11,18 +11,15 @@ func (conn *Conn) Ping() error {
 
 // PingContext is Ping within ctx.
 func (conn *Conn) PingContext(ctx context.Context) error {
-	return simpleCommand(ctx, conn, comPing, "")
-}
-
-// simpleCommand sends a command that the server answers with OK or ERR.
-func simpleCommand(ctx context.Context, conn *Conn, com byte, arg string) error {
 	if err := conn.begin(ctx); err != nil {
 		return err
 	}
 
-	return conn.end(conn.simpleCommand(com, arg))
+	return conn.end(conn.simpleCommand(comPing, ""))
 }
 
+// simpleCommand sends a command that the server answers with OK or ERR,
+// within the current command.
 func (conn *Conn) simpleCommand(com byte, arg string) error {
 	if err := writeCommand(conn, com, arg); err != nil {
 		return err

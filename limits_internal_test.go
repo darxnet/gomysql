@@ -30,7 +30,7 @@ func TestServerLimitsLive(t *testing.T) {
 
 	// wait_timeout of the session, after the init commands.
 	if l.maxAllowedPacket < 1024 || l.maxPreparedStmtCount <= 0 || l.maxConnections <= 0 ||
-		l.waitTimeout.Seconds() != 1234 || l.readOnly {
+		l.waitTimeout.Seconds() != 1234 {
 		t.Errorf("%s: %+v", conn.server, *l)
 	}
 

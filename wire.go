@@ -31,12 +31,7 @@ func isEOF(buf []byte) bool {
 }
 
 // appendLenEncString appends Protocol::LengthEncodedString.
-func appendLenEncString(dst []byte, value string) []byte {
-	dst = appendLenEncInt(dst, uint64(len(value)))
-	return append(dst, value...)
-}
-
-func appendLenEncBytes(dst, value []byte) []byte {
+func appendLenEncString[T string | []byte](dst []byte, value T) []byte {
 	dst = appendLenEncInt(dst, uint64(len(value)))
 	return append(dst, value...)
 }

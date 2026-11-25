@@ -60,7 +60,9 @@ type Conn struct {
 }
 
 func (conn *Conn) dial(ctx context.Context) error {
-	nc, err := conn.dialContext(ctx)
+	var d net.Dialer
+
+	nc, err := d.DialContext(ctx, conn.config.Network, conn.config.Address)
 	if err != nil {
 		return err
 	}
@@ -95,10 +97,8 @@ func (conn *Conn) ReconnectContext(ctx context.Context) error {
 	conn.capFlags = 0
 	conn.dropRows()
 	conn.unwatch()
-	conn.endTx()
+	conn.newSession()
 	conn.state, conn.cause = stateIdle, nil
-	conn.limits = serverLimits{}
-	conn.session++
 
 	if err := conn.dial(ctx); err != nil {
 		conn.breakWith(err)

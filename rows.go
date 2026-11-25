@@ -235,7 +235,7 @@ func (rows *Rows) Close() error {
 func (rows *Rows) Scan(dest ...any) error {
 	if rows.buf == nil {
 		if rows.closed {
-			return errors.New("gomysql: Rows are closed")
+			return errRowsClosed
 		}
 
 		return errors.New("gomysql: Scan called without calling Next")

@@ -113,18 +113,7 @@ func (conn *Conn) ChangeUserContext(ctx context.Context, user, password, databas
 //
 // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_change_user.html
 func (conn *Conn) changeUser() error {
-	a := &Auth{
-		User:     conn.config.User,
-		Password: conn.config.Password,
-		Nonce:    conn.nonce,
-		Secure:   conn.secure(),
-		Config:   &conn.config,
-	}
-
-	plugin := conn.plugin(conn.authPlugin)
-	if plugin == nil {
-		plugin = builtinPlugins[pluginNative]
-	}
+	a, plugin := conn.newAuth(conn.authPlugin, conn.nonce)
 
 	response, err := plugin.Respond(a, conn.nonce)
 	if err != nil {

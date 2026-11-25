@@ -664,13 +664,13 @@ func TestResetConnectionFails(t *testing.T) {
 
 // limitsResult answers limitsQuery with max_allowed_packet and defaults.
 func (c *fakeConn) limitsResult(maxAllowedPacket int) error {
-	cols := make([]fakeColumn, 6)
+	cols := make([]fakeColumn, 5)
 	for i := range cols {
 		cols[i] = fakeColumn{"v", myTypeLongLong, 0}
 	}
 
 	var row []byte
-	for _, v := range []string{strconv.Itoa(maxAllowedPacket), "16382", "151", "0", "28800", "0"} {
+	for _, v := range []string{strconv.Itoa(maxAllowedPacket), "16382", "151", "0", "28800"} {
 		row = appendLenEncString(row, v)
 	}
 
