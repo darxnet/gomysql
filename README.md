@@ -421,17 +421,17 @@ res, err := conn.LoadData("LOAD DATA LOCAL INFILE 'rows.csv' INTO TABLE t FIELDS
 CPU time per row, reading 1M rows from MySQL 8.4 on an Apple M3 Pro. Rows
 show what the columns are scanned into.
 
-| | gomysql | sqldriver (Go 1.27) | go-sql-driver, text | go-sql-driver, prepared |
-|---|---|---|---|---|
-| integers | 48 ns | 107 ns | 209 ns | 190 ns |
-| `sql.RawBytes` | 100 ns | 152 ns | 272 ns | 244 ns |
-| strings | 119 ns | 169 ns | 294 ns | 258 ns |
+| | gomysql | sqldriver (Go 1.27), text | sqldriver (Go 1.27), prepared | go-sql-driver, text | go-sql-driver, prepared |
+|---|---|---|---|---|---|
+| integers | 48 ns | 110 ns | 96 ns | 209 ns | 190 ns |
+| `sql.RawBytes` | 100 ns | 161 ns | 148 ns | 278 ns | 250 ns |
+| strings | 115 ns | 185 ns | 169 ns | 301 ns | 266 ns |
 
 Allocations for the same 1M rows:
 
 | | gomysql | sqldriver | go-sql-driver |
 |---|---|---|---|
-| integers | 1 for the whole query | 14 | 2.3M |
+| integers | 1 for the whole query | 12 (prepared: 19) | 2.3M (prepared: 3.3M) |
 | strings | one per string | one per string | 5M |
 
 A query for a single row by id:
