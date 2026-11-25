@@ -294,16 +294,16 @@ func structFields(t reflect.Type) *structInfo {
 				continue
 			}
 
-			name := f.Name
-			if tagged && tag != "" {
-				name = tag
+			field := structField{name: f.Name, index: idx, tagged: tagged && tag != ""}
+			if field.tagged {
+				field.name = tag
 			}
 
-			if j, ok := info.byName[name]; !ok {
-				info.byName[name] = len(info.fields)
-				info.fields = append(info.fields, structField{name: name, index: idx, tagged: tagged && tag != ""})
+			if j, ok := info.byName[field.name]; !ok {
+				info.byName[field.name] = len(info.fields)
+				info.fields = append(info.fields, field)
 			} else if len(idx) < len(info.fields[j].index) {
-				info.fields[j] = structField{name: name, index: idx, tagged: tagged && tag != ""}
+				info.fields[j] = field
 			}
 		}
 	}
