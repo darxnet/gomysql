@@ -9,7 +9,6 @@ import (
 	"math"
 	"reflect"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -19,6 +18,7 @@ var (
 	errScanRange       = errors.New("value out of range")
 	errScanConvert     = errors.New("cannot convert the column type")
 	errScanUnsupported = errors.New("unsupported destination type")
+	errScanTime        = errors.New("TIME goes into a string or []byte, not time.Duration")
 )
 
 func scanError(i int, col *columnDefinition, dest any, err error) error {
@@ -94,16 +94,11 @@ func assign(dest any, v *value, col *columnDefinition) error {
 
 		*d = float32(f)
 	case *time.Duration:
-		return setDuration(d, v, col)
-	case *sql.Null[time.Duration]: // its Scan cannot parse TIME
-		*d = sql.Null[time.Duration]{}
-		if v.kind == kindNull {
-			return nil
+		if col.Type == myTypeTime || col.Type == myTypeTime2 {
+			return errScanTime
 		}
 
-		d.Valid = true
-
-		return setDuration(&d.V, v, col)
+		return setSigned(d, v)
 	case *time.Time:
 		t, err := v.time(col)
 		if err != nil {
@@ -287,71 +282,6 @@ func (v *value) bitToUint(dest any) {
 	}
 
 	v.kind, v.i = kindUint, u
-}
-
-// setDuration parses a TIME value; other values are nanoseconds, as
-// database/sql converts them.
-func setDuration(d *time.Duration, v *value, col *columnDefinition) error {
-	if v.kind != kindBytes || col.Type != myTypeTime && col.Type != myTypeTime2 {
-		return setSigned(d, v)
-	}
-
-	t, ok := parseDuration(v.b)
-	if !ok {
-		return errScanSyntax
-	}
-
-	*d = t
-
-	return nil
-}
-
-// parseDuration parses a TIME value: [-]H+:MM:SS[.fraction].
-func parseDuration(b []byte) (time.Duration, bool) {
-	negative := len(b) > 0 && b[0] == '-'
-	if negative {
-		b = b[1:]
-	}
-
-	hours, rest, ok := strings.Cut(string(b), ":")
-	if !ok || len(rest) < 5 || rest[2] != ':' {
-		return 0, false
-	}
-
-	clock, frac, hasFrac := strings.Cut(rest[3:], ".")
-	if len(clock) != 2 || hasFrac && (frac == "" || len(frac) > 6) {
-		return 0, false
-	}
-
-	h, err1 := parseUint64([]byte(hours))
-	m, err2 := parseUint64([]byte(rest[:2]))
-	s, err3 := parseUint64([]byte(clock))
-
-	if err1 != nil || err2 != nil || err3 != nil || len(hours) > 4 || m > 59 || s > 59 {
-		return 0, false
-	}
-
-	//nolint:gosec // G115: h < 10000, m and s < 60
-	t := time.Duration(h)*time.Hour + time.Duration(m)*time.Minute + time.Duration(s)*time.Second
-
-	if hasFrac {
-		micro, err := parseUint64([]byte(frac))
-		if err != nil {
-			return 0, false
-		}
-
-		for range 6 - len(frac) {
-			micro *= 10
-		}
-
-		t += time.Duration(micro) * time.Microsecond //nolint:gosec // G115: < 1e6
-	}
-
-	if negative {
-		t = -t
-	}
-
-	return t, true
 }
 
 // setBool accepts 0 and 1, and the strings of strconv.ParseBool.

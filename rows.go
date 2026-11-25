@@ -219,9 +219,10 @@ func (rows *Rows) Close() error {
 // and TIMESTAMP values scanned into time.Time, any or an sql.Scanner are
 // time.Time in Config.Location; the zero date is the zero time.Time.
 // Scanned into a string they keep the server's format. TIME values go
-// into time.Duration, and so do integers, as nanoseconds; BIT values (up
-// to 64 bits) go into integers and bool. JSON and text values go into a pointer to a struct, map, array or
-// slice through json.Unmarshal.
+// only into a string or []byte ("-12:34:56.5"); a time.Duration gets
+// integers, as nanoseconds. BIT values (up to 64 bits) go into integers
+// and bool. JSON and text values go into a pointer to a struct, map, array
+// or slice through json.Unmarshal.
 //
 // An any or an sql.Scanner gets the same in both protocols: int64 for
 // integers but BIGINT UNSIGNED and BIT, which are uint64; float32 for

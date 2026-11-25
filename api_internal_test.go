@@ -167,7 +167,7 @@ func TestColumnType(t *testing.T) {
 			want{name: "ENUM", scan: reflect.TypeFor[string](), length: 4, hasLength: true},
 		},
 		{columnDefinition{Type: myTypeDatetime2}, want{name: "DATETIME", scan: reflect.TypeFor[sql.Null[time.Time]]()}},
-		{columnDefinition{Type: myTypeTime, Flags: notNull}, want{name: "TIME", scan: reflect.TypeFor[time.Duration]()}},
+		{columnDefinition{Type: myTypeTime, Flags: notNull}, want{name: "TIME", scan: reflect.TypeFor[string]()}},
 		{columnDefinition{Type: myTypeBit, Collation: bin}, want{name: "BIT", scan: reflect.TypeFor[sql.Null[uint64]]()}},
 		{
 			columnDefinition{Type: myTypeJSON, Collation: bin, Len: 1 << 30},

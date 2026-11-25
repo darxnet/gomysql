@@ -143,7 +143,6 @@ func TestScanBinary(t *testing.T) {
 	ubig := col(myTypeLongLong, unsignedFlag, 0)
 	str := col(myTypeVarString, 0, 0)
 	bin := columnDefinition{Name: []byte("c"), Type: myTypeVarString, Collation: collationBinary}
-	minus26 := -(26*time.Hour + 3*time.Minute + 4500*time.Millisecond)
 	jsonCol := columnDefinition{Name: []byte("c"), Type: myTypeJSON, Collation: collationBinary}
 	bit := columnDefinition{Name: []byte("c"), Type: myTypeBit, Collation: collationBinary}
 	dt3 := col(myTypeDatetime, 0, 3)
@@ -192,9 +191,8 @@ func TestScanBinary(t *testing.T) {
 		{"null struct", cell{columnDefinition{Type: myTypeJSON}, nil}, fail(errScanNull, struct{}{})},
 		{"null *struct", cell{columnDefinition{Type: myTypeJSON}, nil}, (*struct{})(nil)},
 		{"bit(1) bool", cell{bit, []byte{1, 1}}, true},
-		{"time duration", cell{tm1, timeMinus26}, minus26},
-		{"time zero duration", cell{col(myTypeTime, 0, 0), []byte{0}}, time.Duration(0)},
-		{"time NullDuration", cell{tm1, timeMinus26}, sql.Null[time.Duration]{V: minus26, Valid: true}},
+		{"time duration", cell{tm1, timeMinus26}, fail(errScanTime, time.Duration(0))},
+		{"time zero string", cell{col(myTypeTime, 0, 0), []byte{0}}, "00:00:00"},
 		{"null NullDuration", null, sql.Null[time.Duration]{}},
 		{"null NullUint64", null, sql.Null[uint64]{}},
 		{"ubig 5 uint32", cell{ubig, le64(5)}, uint32(5)},
@@ -260,9 +258,8 @@ func TestScanText(t *testing.T) {
 		{"binary any", cell{columnDefinition{Type: myTypeBlob, Collation: collationBinary}, []byte("x")}, anyOf{[]byte("x")}},
 		{"decimal any", cell{decimal, []byte("1.50")}, anyOf{[]byte("1.50")}},
 		{"bit '1' uint64", cell{columnDefinition{Type: myTypeBit}, []byte("1")}, uint64('1')},
-		{"time duration", cell{col(myTypeTime, 0, 0), []byte("-838:59:59")}, -(838*time.Hour + 3599*time.Second)},
-		{"time(1) duration", cell{col(myTypeTime, 0, 1), []byte("12:00:00.5")}, 12*time.Hour + 500*time.Millisecond},
-		{"bad time duration", cell{col(myTypeTime, 0, 0), []byte("12:5:00")}, fail(errScanSyntax, time.Duration(0))},
+		{"time duration", cell{col(myTypeTime, 0, 0), []byte("-838:59:59")}, fail(errScanTime, time.Duration(0))},
+		{"time string", cell{col(myTypeTime, 0, 1), []byte("12:00:00.5")}, "12:00:00.5"},
 		{"int duration", cell{col(myTypeLong, 0, 0), []byte("5")}, time.Duration(5)},
 		{"date time", cell{col(myTypeDate, 0, 0), []byte("2026-11-18")}, time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC)},
 		{"datetime(2) any", cell{col(myTypeDatetime, 0, 2), []byte("2026-11-18 13:31:33.12")}, anyOf{when}},

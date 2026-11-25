@@ -65,7 +65,7 @@ func TestConformanceColumnTypes(t *testing.T) {
 		{"VARBINARY", reflect.TypeFor[[]byte](), true},
 		{"TEXT", reflect.TypeFor[sql.Null[string]](), true},
 		{"DATETIME", reflect.TypeFor[sql.Null[time.Time]](), true},
-		{"TIME", reflect.TypeFor[time.Duration](), false},
+		{"TIME", reflect.TypeFor[string](), false},
 		{"BIT", reflect.TypeFor[sql.Null[uint64]](), true},
 		{"ENUM", reflect.TypeFor[sql.Null[string]](), true},
 	}
@@ -176,7 +176,7 @@ func TestConformanceLocation(t *testing.T) {
 	}
 }
 
-// TIME into time.Duration, BIT into integers, and what an any gets.
+// TIME into strings, BIT into integers, and what an any gets.
 func TestConformanceConversions(t *testing.T) {
 	t.Parallel()
 
@@ -195,7 +195,7 @@ func TestConformanceConversions(t *testing.T) {
 		}
 
 		var (
-			tm, tm1 time.Duration
+			tm, tm1 string
 			bt      uint64
 			b1      bool
 			u, v    any
@@ -217,7 +217,7 @@ func TestConformanceConversions(t *testing.T) {
 
 		got := []any{tm, tm1, bt, b1, u, v, vb, j, string(jAny.(json.RawMessage)), btAny, b1Null}
 		want := []any{
-			-(838*time.Hour + 59*time.Minute + 59*time.Second), 12*time.Hour + 500*time.Millisecond,
+			"-838:59:59", "12:00:00.5",
 			uint64(513), true, uint64(math.MaxUint64), "x", []byte("y"), struct{ A []int }{[]int{1, 2}},
 			`{"a": [1, 2]}`, uint64(513), sql.NullBool{Bool: true, Valid: true},
 		}

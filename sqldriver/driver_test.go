@@ -3,6 +3,7 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"math"
@@ -202,14 +203,7 @@ func TestColumnTypesAndRaw(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	err = conn.Raw(func(dc any) error {
-		c, ok := dc.(interface{ Conn() *gomysql.Conn })
-		if !ok {
-			return errors.New("no Conn method")
-		}
-
-		return c.Conn().Ping()
-	})
+	err = sqldriver.Raw(conn, func(c *gomysql.Conn) error { return c.Ping() })
 	if err != nil {
 		t.Errorf("Raw: %v", err)
 	}
@@ -399,11 +393,11 @@ func TestRawBroken(t *testing.T) {
 	}
 
 	// A deadline that passes mid-statement breaks the gomysql connection.
-	_ = conn.Raw(func(dc any) error {
+	_ = sqldriver.Raw(conn, func(c *gomysql.Conn) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		defer cancel()
 
-		_, err := dc.(interface{ Conn() *gomysql.Conn }).Conn().ExecContext(ctx, "DO SLEEP(2)")
+		_, err := c.ExecContext(ctx, "DO SLEEP(2)")
 
 		return err
 	})
@@ -429,9 +423,7 @@ func TestRawLeftRows(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_ = conn.Raw(func(dc any) error {
-		c := dc.(interface{ Conn() *gomysql.Conn }).Conn()
-
+	_ = sqldriver.Raw(conn, func(c *gomysql.Conn) error {
 		//nolint:sqlclosecheck,rowserrcheck,gocritic // left open on purpose
 		_, err := c.Query("SELECT 1 UNION SELECT 2")
 
@@ -513,5 +505,34 @@ func TestNextResultSet(t *testing.T) {
 		}
 
 		_ = rows.Close() //nolint:sqlclosecheck // one rows per loop
+	}
+}
+
+type otherConn struct{ driver.Conn }
+
+func (otherConn) Close() error { return nil }
+
+type otherConnector struct{}
+
+func (otherConnector) Connect(context.Context) (driver.Conn, error) { return otherConn{}, nil }
+func (otherConnector) Driver() driver.Driver                        { return nil }
+
+// Raw refuses a connection of another driver.
+func TestRawOtherDriver(t *testing.T) {
+	t.Parallel()
+
+	db := sql.OpenDB(otherConnector{})
+	defer func() { _ = db.Close() }()
+
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	called := false
+	err = sqldriver.Raw(conn, func(*gomysql.Conn) error { called = true; return nil })
+	if err == nil || called {
+		t.Errorf("Raw: %v, called %v", err, called)
 	}
 }
