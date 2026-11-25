@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha1" //nolint:gosec // G505: mysql_native_password and RSA-OAEP of MySQL are defined with SHA-1
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -261,9 +262,7 @@ func (nativePassword) Respond(a *Auth, data []byte) ([]byte, error) {
 	h.Write(hash2[:])
 
 	response := h.Sum(nil)
-	for i := range response {
-		response[i] ^= hash[i]
-	}
+	subtle.XORBytes(response, response, hash[:])
 
 	return response, nil
 }
@@ -332,9 +331,7 @@ func scrambleSHA256(password string, nonce []byte) []byte {
 	h.Write(nonce)
 
 	response := h.Sum(nil)
-	for i := range response {
-		response[i] ^= hash[i]
-	}
+	subtle.XORBytes(response, response, hash[:])
 
 	return response
 }
