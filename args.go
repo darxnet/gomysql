@@ -91,7 +91,7 @@ func convertArg(arg any) (any, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("gomysql: unsupported argument type %T", arg)
+	return nil, unsupportedArg(arg)
 }
 
 func errArgCount(placeholders, args int) error {
@@ -384,7 +384,7 @@ func (e *escaper) appendLiteral(buf []byte, arg any) ([]byte, error) {
 		return appendTimeLiteral(buf, inLocation(v, e.loc)), nil
 	}
 
-	return buf, fmt.Errorf("gomysql: unsupported argument type %T", arg)
+	return buf, unsupportedArg(arg)
 }
 
 func appendFloat(buf []byte, f float64, bits int) ([]byte, error) {

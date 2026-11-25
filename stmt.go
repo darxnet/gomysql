@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"reflect"
 	"time"
 )
 
@@ -499,7 +498,7 @@ func appendParam(values []byte, arg any, loc *time.Location) (typ [2]byte, newVa
 	case float64:
 		return [2]byte{myTypeDouble, 0}, le.AppendUint64(values, math.Float64bits(v)), nil
 	default:
-		return [2]byte{}, values, unsupportedArg(reflect.TypeOf(v).Name())
+		return [2]byte{}, values, unsupportedArg(arg)
 	}
 }
 
